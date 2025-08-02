@@ -1,5 +1,5 @@
 "use client"
-import { Button } from 'antd'
+import { Button, Collapse } from 'antd'
 import { MPLBoneFrame, Quaternion as MPLQuaternion, Vector3 as MPLVector3 } from "mmd-mpl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMPLCompiler } from "./ui/hooks/useMLPCompiler";
@@ -88,6 +88,57 @@ export default function Home() {
   }, [mplCompiler])
     return (
     <div className="flex flex-col items-center py-4 justify-center">
+      {/* Информационная панель */}
+      <div className="w-full max-w-4xl mb-6">
+        <Collapse 
+          defaultActiveKey={['1']} 
+          items={[
+            {
+              key: '1',
+              label: '📖 Гайд для новичков - КАК ИСПОЛЬЗОВАТЬ ПРИЛОЖЕНИЕ',
+              children: (
+                <div className="space-y-4">
+                  <div className="bg-blue-50 p-4 rounded-lg">
+                    <h3 className="font-bold text-lg mb-2">🎯 Что делает это приложение?</h3>
+                    <p>Конвертирует позы MMD из формата .vpd в MPL и создает датасеты для обучения AI.</p>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <h4 className="font-semibold">📋 Пошаговая инструкция:</h4>
+                    <ol className="list-decimal list-inside space-y-1 ml-4">
+                      <li><strong>Подготовьте .vpd файлы</strong> - найдите позы в интернете или создайте в MikuMikuDance</li>
+                      <li><strong>Загрузите файлы</strong> - перетащите или кликните на область загрузки</li>
+                      <li><strong>Добавьте описания</strong> - для каждой позы напишите текстовое описание</li>
+                      <li><strong>Скачайте датасет</strong> - нажмите "Скачать Dataset" для создания файла</li>
+                    </ol>
+                  </div>
+
+                  <div className="bg-yellow-50 p-4 rounded-lg">
+                    <h4 className="font-semibold mb-2">📤 Куда отправить датасет?</h4>
+                    <ul className="space-y-1">
+                      <li>• <strong>GitHub Issues:</strong> <a href="https://github.com/GOH23/pose2mpl/issues" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Создайте issue и прикрепите файл dataset.jsonl</a></li>
+                      <li>• <strong>Email:</strong> <a href="mailto:goh10117@gmail.com" className="text-blue-600 hover:underline">goh10117@gmail.com</a></li>
+                      <li>• <strong>Telegram:</strong> <a href="https://t.me/goh222" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">@goh222</a></li>
+                      <li>• <strong>GitHub:</strong> <a href="https://github.com/GOH23/pose2mpl" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Открытый исходный код</a></li>
+                    </ul>
+                  </div>
+
+                  <div className="bg-green-50 p-4 rounded-lg">
+                    <h4 className="font-semibold mb-2">💡 Примеры описаний поз:</h4>
+                    <ul className="space-y-1">
+                      <li>• "Девушка стоит с поднятой правой рукой"</li>
+                      <li>• "Поза танца с разведенными руками"</li>
+                      <li>• "Приветствие с поклоном"</li>
+                      <li>• "Сидячая поза с книгой"</li>
+                    </ul>
+                  </div>
+                </div>
+              )
+            }
+          ]}
+        />
+      </div>
+
       <div 
         className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors"
         onDrop={async (e: React.DragEvent) => {
