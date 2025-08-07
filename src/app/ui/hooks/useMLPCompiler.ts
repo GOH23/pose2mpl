@@ -5,8 +5,8 @@ export function useMPLCompiler() {
   const [compiler, setCompiler] = useState<WasmMPLCompiler | null>(null)
 
   useEffect(() => {
-    let cancelled = false
-    ;(async () => {
+    let cancelled = false;
+    (async () => {
       const { default: init, WasmMPLCompiler } = await import("mmd-mpl")
       await init()
       if (!cancelled) setCompiler(new WasmMPLCompiler())

@@ -1,0 +1,28 @@
+{
+    "guide": {
+        "title": "📖 初心者ガイド - アプリケーションの使い方",
+        "howToUse1": "🎯 このアプリケーションの機能は？",
+        "howToUse2": "MMDポーズを.vpdフォーマットからMPLに変換し、AIトレーニング用のデータセットを作成します。",
+        "guide_instruction1": {
+            "instruction1": "📋 ステップバイステップの手順:",
+            "instruction2": ".vpdファイルを準備 - インターネットでポーズを探したり、MikuMikuDanceで作成します",
+            "instruction3": "ファイルをアップロード - ドラッグアンドドロップまたはアップロード領域をクリックします",
+            "instruction4": "説明を追加 - 各ポーズにテキスト説明を記入します",
+            "instruction5": "データセットをダウンロード - 「データセットをダウンロード」をクリックしてファイルを生成します"
+        },
+        "howToUse3": "📤 データセットをどこに送信しますか？",
+        "howToUse4": "💡 ポーズ説明の例:",
+        "guide_instruction2": {
+            "instruction1": "• 「右腕を上げて立っている少女」",
+            "instruction2": "• 「腕を広げたダンスポーズ」",
+            "instruction3": "• 「お辞儀を伴う挨拶」",
+            "instruction4": "• 「本を持った座り姿勢」"
+        },
+        "downloadTitle": "ダウンロード",
+        "clearAllTitle": "すべてクリア",
+        "openSourceText": "オープンソースコード",
+        "createIssue": "課題を作成し、データセットを添付します。jsonlファイル",
+        "clickAndSelect": "クリックまたはドラッグします。ダウンロードするvpdファイル",
+        "allowedExtentionText": "を持つファイルのみ。vpd拡張は許可されています。"
+    }
+}

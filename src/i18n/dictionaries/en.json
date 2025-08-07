@@ -1,0 +1,28 @@
+{
+    "guide": {
+        "title": "📖 Beginner's Guide - HOW TO USE THE APP",
+        "howToUse1": "🎯 What does this app do?",
+        "howToUse2": "Converts MMD poses from .vpd format to MPL and creates datasets for AI training.",
+        "guide_instruction1": {
+            "instruction1": "📋 Step-by-step instructions:",
+            "instruction2": "Prepare .vpd files - find poses online or create them in MikuMikuDance",
+            "instruction3": "Upload files - drag and drop or click the upload area",
+            "instruction4": "Add descriptions - write a text description for each pose",
+            "instruction5": "Download dataset - click \"Download Dataset\" to create the file"
+        },
+        "howToUse3": "📤 Where to send the dataset?",
+        "howToUse4": "💡 Examples of pose descriptions:",
+        "guide_instruction2": {
+            "instruction1": "• \"Girl standing with right hand raised\"",
+            "instruction2": "• \"Dance pose with arms spread\"",
+            "instruction3": "• \"Greeting with a bow\"",
+            "instruction4": "• \"Sitting pose with a book\""
+        },
+        "downloadTitle": "Download",
+        "clearAllTitle": "Clear All",
+        "openSourceText": "Open source code",
+        "createIssue": "Create an issue and attach a dataset.jsonl file",
+        "clickAndSelect": "Click or drag .vpd file to download",
+        "allowedExtentionText": "Only files with the .vpd extension are allowed."
+    }
+}
