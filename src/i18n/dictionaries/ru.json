@@ -18,11 +18,26 @@
       "instruction3": "• \"Приветствие с поклоном\"",
       "instruction4": "• \"Сидячая поза с книгой\""
     },
+    
     "downloadTitle": "Скачать dataset",
     "clearAllTitle": "Очистить все",
     "createIssue": "Создайте issue и прикрепите файл dataset.jsonl",
     "openSourceText": "Открытый исходный код",
     "clickAndSelect": "Кликните или перетащите .vpd файл для загрузки",
-    "allowedExtentionText": "Разрешены только файлы с расширением .vpd."
+    "allowedExtentionText": "Разрешены только файлы с расширением .vpd.",
+
+    "newFeatureTitle": "Новые возможности",
+    "newFeatureText": "Теперь поддерживается прямое извлечение поз из изображений и видео",
+    "supportedFormats": {
+      "images": "Изображения: JPG, PNG, WebP",
+      "videos": "Видео: MP4, WebM"
+    },
+    "processing": "Обработка файла...",
+    "error": {
+      "mediaPipeInit": "Ошибка загрузки MediaPipe",
+      "mediaPipeNotReady": "MediaPipe ещё не загружен. Подождите немного.",
+      "compilerNotReady": "MPL компилятор не готов",
+      "processError": "Ошибка обработки файла"
+    }
   }
 }

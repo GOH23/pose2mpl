@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-
+import '@ant-design/v5-patch-for-react-19';
 import "../globals.css";
 import { ReactNode } from "react";
 import { Locale } from "@/i18n/config";

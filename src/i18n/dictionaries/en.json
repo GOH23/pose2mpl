@@ -23,6 +23,20 @@
         "openSourceText": "Open source code",
         "createIssue": "Create an issue and attach a dataset.jsonl file",
         "clickAndSelect": "Click or drag .vpd file to download",
-        "allowedExtentionText": "Only files with the .vpd extension are allowed."
+        "allowedExtentionText": "Only files with the .vpd extension are allowed.",
+
+        "newFeatureTitle": "New Features",
+        "newFeatureText": "Now supports direct pose extraction from images and videos",
+        "supportedFormats": {
+            "images": "Images: JPG, PNG, WebP",
+            "videos": "Videos: MP4, WebM"
+        },
+        "processing": "Processing file...",
+        "error": {
+            "mediaPipeInit": "Failed to load MediaPipe",
+            "mediaPipeNotReady": "MediaPipe is not loaded yet. Please wait.",
+            "compilerNotReady": "MPL compiler is not ready",
+            "processError": "Error processing file"
+        }
     }
 }

@@ -23,6 +23,20 @@
         "openSourceText": "オープンソースコード",
         "createIssue": "課題を作成し、データセットを添付します。jsonlファイル",
         "clickAndSelect": "クリックまたはドラッグします。ダウンロードするvpdファイル",
-        "allowedExtentionText": "を持つファイルのみ。vpd拡張は許可されています。"
+        "allowedExtentionText": "を持つファイルのみ。vpd拡張は許可されています。",
+
+        "newFeatureTitle": "新機能",
+        "newFeatureText": "画像とビデオから直接ポーズを抽出できるようになりました",
+        "supportedFormats": {
+            "images": "画像: JPG、PNG、WebP",
+            "videos": "ビデオ: MP4、WebM"
+        },
+        "processing": "ファイルを処理中...",
+        "error": {
+            "mediaPipeInit": "MediaPipeの読み込みに失敗しました",
+            "mediaPipeNotReady": "MediaPipeはまだ読み込まれていません。しばらくお待ちください。",
+            "compilerNotReady": "MPLコンパイラが準備できていません",
+            "processError": "ファイル処理中にエラーが発生しました"
+        }
     }
 }

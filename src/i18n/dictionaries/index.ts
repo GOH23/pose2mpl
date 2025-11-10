@@ -1,14 +1,16 @@
 // lib/i18n/dictionaries/index.ts
 import 'server-only';
 import type { Locale } from '../config';
+// Use a flexible dictionary shape to allow locale-specific keys.
+export type Dictionary = Record<string, any>;
 
-const dictionaries = {
-    en: () => import('./en.json').then((module) => module.default),
-    ru: () => import('./ru.json').then((module) => module.default),
-    ja: () => import('./ja.json').then((module) => module.default)
+const dictionaries: Record<string, () => Promise<Dictionary>> = {
+    en: () => import('./en.json').then((module) => module.default as Dictionary),
+    ru: () => import('./ru.json').then((module) => module.default as Dictionary),
+    ja: () => import('./ja.json').then((module) => module.default as Dictionary)
 };
 
-export const getDictionary = async (locale: Locale) => {
+export const getDictionary = async (locale: Locale): Promise<Dictionary> => {
     try {
         const dictModule = await dictionaries[locale]();
         return dictModule;

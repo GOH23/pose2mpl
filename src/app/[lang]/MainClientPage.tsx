@@ -1,96 +1,266 @@
 "use client"
-import { Button, Collapse } from 'antd'
-import { MPLBoneFrame, Quaternion as MPLQuaternion, Vector3 as MPLVector3 } from "mmd-mpl";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Collapse, message } from 'antd'
+import { useRef, useState, useEffect } from "react";
 import { useMPLCompiler } from "../ui/hooks/useMLPCompiler";
-import { BpmxLoader, VpdLoader } from 'babylon-mmd'
-import { Camera, Engine, RegisterSceneLoaderPlugin, Scene, Vector3 } from '@babylonjs/core'
 import CodeViewer from '../ui/CodeViewer';
-import { FundViewOutlined } from '@ant-design/icons';
+import { FilesetResolver, HolisticLandmarker } from "@mediapipe/tasks-vision"
+import { FiX, FiZap } from 'react-icons/fi';
+import { Vector3, Quaternion } from "@babylonjs/core";
+import { BoneState, Solver } from '../ui/solver/mediapipe_solver';
+import type { Dictionary } from '@/i18n/dictionaries';
+
 export type jsonState = {
   prompt?: string,
   answer: string
 }
-export function MainClientPage({
-  t
-}: { t: any }) {
+
+export function MainClientPage({ t }: { t: Dictionary }) {
 
   const canvasRef = useRef(null)
-  const vpdLoaderRef = useRef<VpdLoader>(null)
   const mplCompiler = useMPLCompiler()
   const [jsonState, setJsonState] = useState<jsonState[]>()
   const [processedFiles, setProcessedFiles] = useState<Set<string>>(new Set())
-  const loadVPD = useCallback(
-    async (vpdUrl: string): Promise<MPLBoneFrame[] | null> => {
-      if (!vpdLoaderRef.current || !mplCompiler) return null
+  const [holisticLandmarker, setHolisticLandmarker] = useState<HolisticLandmarker | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
 
-      const vpd = await vpdLoaderRef.current.loadAsync("vpd_pose", vpdUrl)
-      // modelRef.current.addAnimation(vpd)
-      // modelRef.current.setAnimation("vpd_pose")
-      // modelRef.current.currentAnimation?.animate(0)
-      const boneStates: MPLBoneFrame[] = []
-      for (const boneTrack of vpd.boneTracks) {
-        const boneNameJp = boneTrack.name
-        const boneNameEn = mplCompiler.get_bone_english_name(boneNameJp)
-        if (!boneNameEn) {
-          continue
-        }
-
-        const rotation = boneTrack.rotations
-        if (rotation.length === 0) continue
-
-        if (!(rotation[0] === 0 && rotation[1] === 0 && rotation[2] === 0 && rotation[3] === 1)) {
-          boneStates.push(
-            new MPLBoneFrame(
-              boneNameEn,
-              boneNameJp,
-              new MPLVector3(0, 0, 0),
-              new MPLQuaternion(rotation[0], rotation[1], rotation[2], rotation[3])
-            )
-          )
-        }
-      }
-
-      for (const boneTrack of vpd.movableBoneTracks) {
-        const boneNameJp = boneTrack.name
-        const boneNameEn = mplCompiler.get_bone_english_name(boneNameJp)
-        if (!boneNameEn) {
-          continue
-        }
-        let position = new MPLVector3(0, 0, 0)
-        let rotation = new MPLQuaternion(0, 0, 0, 1)
-        if (boneTrack.positions && boneTrack.positions.length > 0) {
-          position = new MPLVector3(boneTrack.positions[0], boneTrack.positions[1], boneTrack.positions[2])
-        }
-
-        if (boneTrack.rotations && boneTrack.rotations.length > 0) {
-          rotation = new MPLQuaternion(
-            boneTrack.rotations[0],
-            boneTrack.rotations[1],
-            boneTrack.rotations[2],
-            boneTrack.rotations[3]
-          )
-        }
-        boneStates.push(new MPLBoneFrame(boneNameEn, boneNameJp, position, rotation))
-      }
-      return boneStates
-    },
-    [vpdLoaderRef, mplCompiler]
-  )
+  // Инициализация MediaPipe Holistic
   useEffect(() => {
-    const init = async () => {
-      if (!canvasRef.current || !mplCompiler) return
-      RegisterSceneLoaderPlugin(new BpmxLoader())
-      const engine = new Engine(canvasRef.current, true, {}, true)
-      const scene = new Scene(engine)
-      const camera = new Camera("camera_dd", new Vector3(), scene)
-      vpdLoaderRef.current = new VpdLoader(scene)
-      engine.runRenderLoop(() => {
-        scene.render()
-      })
+    let isMounted = true
+
+    const initializeMediaPipe = async () => {
+      try {
+        const filesetResolver = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+        )
+        const landmarker = await HolisticLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/latest/holistic_landmarker.task",
+            delegate: "GPU"
+          },
+          runningMode: "IMAGE"
+        })
+        if (isMounted) {
+          setHolisticLandmarker(landmarker)
+        }
+      } catch (error) {
+        console.error("Failed to initialize MediaPipe:", error)
+        message.error(t.guide.error.mediaPipeInit)
+      }
     }
-    init()
-  }, [mplCompiler])
+
+    initializeMediaPipe()
+
+    return () => {
+      isMounted = false
+    }
+  }, [t.guide.error.mediaPipeInit])
+
+  // Конвертация BoneState в MPL формат
+  const boneStatesToMPL = (boneStates: BoneState[], fileName: string): any => {
+    return {
+      metadata: {
+        source: fileName,
+        generated_at: new Date().toISOString(),
+        type: "pose"
+      },
+      bone_frames: boneStates.map(bs => ({
+        name: bs.name,
+        rotation: {
+          x: bs.rotation.x,
+          y: bs.rotation.y,
+          z: bs.rotation.z,
+          w: bs.rotation.w
+        },
+        position: { x: 0, y: 0, z: 0 }
+      }))
+    }
+  }
+
+  // Обработка изображения
+  const processImage = async (file: File) => {
+    if (!holisticLandmarker) {
+      message.warning(t.guide.error.mediaPipeNotReady)
+      return
+    }
+
+    setIsProcessing(true)
+    try {
+      const imageBitmap = await createImageBitmap(file)
+      const results = await holisticLandmarker.detect(imageBitmap)
+
+      if (results.poseWorldLandmarks.length > 0) {
+        const solver = new Solver()
+        const boneStates = solver.solve(results)
+
+        if (boneStates && mplCompiler) {
+          const vpdBlob = solver.exportToVpdBlob("pose_from_image", boneStates)
+          const vpdArrayBuffer = await vpdBlob.arrayBuffer()
+          setJsonState(prev => [...(prev || []), {
+            prompt: `Image pose: ${file.name}`,
+            answer: JSON.stringify(mplCompiler.reverse_compile("vpd", new Uint8Array(vpdArrayBuffer)))
+          }])
+
+          message.success(`${file.name} processed successfully`)
+        }
+      } else {
+        message.warning(`No pose detected in ${file.name}`)
+      }
+    } catch (error) {
+      console.error(`Error processing image ${file.name}:`, error)
+      message.error(`${t.guide.error.processError}: ${file.name}`)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // Обработка видео
+  const processVideo = async (file: File) => {
+    if (!holisticLandmarker) {
+      message.warning(t.guide.error.mediaPipeNotReady)
+      return
+    }
+
+    setIsProcessing(true)
+    const video = document.createElement('video')
+    video.src = URL.createObjectURL(file)
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve()
+        video.onerror = reject
+      })
+
+      holisticLandmarker.setOptions({ runningMode: "VIDEO" })
+
+      const fps = 30
+      const frameInterval = 1 / fps
+      const totalFrames = Math.floor(video.duration * fps)
+      const framesToProcess = Math.min(totalFrames, 300)
+      const skipInterval = Math.max(1, Math.floor(totalFrames / framesToProcess))
+
+      const animationFrames = []
+
+      for (let i = 0; i < framesToProcess; i += skipInterval) {
+        const time = i / fps
+        video.currentTime = time
+
+        await new Promise<void>((resolve) => {
+          video.onseeked = () => resolve()
+        })
+
+        const timestamp = time * 1000
+        const results = await holisticLandmarker.detectForVideo(video, timestamp)
+
+        if (results.poseWorldLandmarks.length > 0) {
+          const solver = new Solver()
+          const boneStates = solver.solve(results)
+
+          if (boneStates) {
+            animationFrames.push({
+              frame: i,
+              boneStates: boneStates
+            })
+          }
+        }
+      }
+
+      if (animationFrames.length > 0) {
+        const mplData = {
+          metadata: {
+            source: file.name,
+            generated_at: new Date().toISOString(),
+            type: "animation",
+            fps: fps,
+            frame_count: animationFrames.length
+          },
+          bone_animation: animationFrames.map(af => ({
+            frame: af.frame,
+            bone_states: boneStatesToMPL(af.boneStates, file.name).bone_frames
+          }))
+        }
+
+        setJsonState(prev => [...(prev || []), {
+          prompt: `Video animation: ${file.name} (${animationFrames.length} frames)`,
+          answer: JSON.stringify(mplData)
+        }])
+
+        message.success(`${file.name} processed successfully (${animationFrames.length} frames)`)
+      } else {
+        message.warning(`No pose detected in ${file.name}`)
+      }
+    } catch (error) {
+      console.error(`Error processing video ${file.name}:`, error)
+      message.error(`${t.guide.error.processError}: ${file.name}`)
+    } finally {
+      setIsProcessing(false)
+      holisticLandmarker?.setOptions({ runningMode: "IMAGE" })
+      URL.revokeObjectURL(video.src)
+    }
+  }
+
+  // Унифицированная обработка файлов
+  const processFile = async (file: File) => {
+    if (processedFiles.has(file.name)) {
+      message.info(`${file.name} already processed`)
+      return
+    }
+
+    setProcessedFiles(prev => new Set([...prev, file.name]))
+
+    if (file.name.endsWith('.vpd') || file.name.endsWith(".vmd")) {
+      if (!mplCompiler) {
+        message.warning(t.guide.error.compilerNotReady)
+        return
+      }
+      try {
+        const result = mplCompiler.reverse_compile(
+          file.name.endsWith(".vmd") ? "vmd" : "vpd",
+          new Uint8Array(await file.arrayBuffer())
+        )
+        setJsonState(prev => [...(prev || []), {
+          prompt: undefined,
+          answer: JSON.stringify(result)
+        }])
+      } catch (error) {
+        console.error(`Error processing ${file.name}:`, error)
+        message.error(`${t.guide.error.processError}: ${file.name}`)
+      }
+    } else if (file.type.startsWith('image/')) {
+      await processImage(file)
+    } else if (file.type.startsWith('video/')) {
+      await processVideo(file)
+    } else {
+      message.warning(`Unsupported file type: ${file.name}`)
+    }
+  }
+
+  // Обработчик drag-and-drop
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    const files = Array.from(e.dataTransfer.files)
+    for (const file of files) {
+      await processFile(file)
+    }
+  }
+
+  // Обработчик клика
+  const handleClick = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.vpd,.vmd,image/*,video/*'
+    input.multiple = true
+    input.onchange = async (e) => {
+      const target = e.target as HTMLInputElement
+      if (target.files) {
+        const files = Array.from(target.files)
+        for (const file of files) {
+          await processFile(file)
+        }
+      }
+    }
+    input.click()
+  }
+
   return (
     <div className="flex flex-col items-center py-4 justify-center">
       {/* Информационная панель */}
@@ -117,6 +287,16 @@ export function MainClientPage({
                       <li>{t.guide.guide_instruction1.instruction5}</li>
                     </ol>
                   </div>,
+
+                  <div className="bg-purple-50 p-4 rounded-lg">
+                    <h4 className="font-semibold mb-2">{t.guide.newFeatureTitle}</h4>
+                    <p>{t.guide.newFeatureText}</p>
+                    <ul className="list-disc list-inside ml-4 mt-2">
+                      <li>• {t.guide.supportedFormats.images}</li>
+                      <li>• {t.guide.supportedFormats.videos}</li>
+                    </ul>
+                  </div>
+
                   <div className="bg-yellow-50 p-4 rounded-lg">
                     <h4 className="font-semibold mb-2">{t.guide.howToUse2}</h4>
                     <ul className="space-y-1">
@@ -126,6 +306,7 @@ export function MainClientPage({
                       <li>• <strong>GitHub:</strong> <a href="https://github.com/GOH23/pose2mpl" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{t.guide.openSourceText}</a></li>
                     </ul>
                   </div>
+
                   <div className="bg-green-50 p-4 rounded-lg">
                     <h4 className="font-semibold mb-2">{t.guide.howToUse4}</h4>
                     <ul className="space-y-1">
@@ -142,112 +323,126 @@ export function MainClientPage({
         />
       </div>
 
+      {/* Индикатор обработки */}
+      {isProcessing && (
+        <div className="w-full max-w-4xl mb-4">
+          <div className="bg-blue-100 p-4 rounded-lg text-center">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <p className="mt-2">{t.guide.processing}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Зона загрузки файлов */}
       <div
         className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors"
-        onDrop={async (e: React.DragEvent) => {
-          e.preventDefault();
-          console.log('onDrop triggered');
-          const files = Array.from(e.dataTransfer.files);
-
-          for (const file of files) {
-            if (file.name.endsWith('.vpd') && !processedFiles.has(file.name)) {
-              console.log('Processing dropped file:', file.name);
-              setProcessedFiles(prev => new Set([...prev, file.name]));
-
-              const fileUrl = URL.createObjectURL(file);
-              const vpdFile = await loadVPD(fileUrl);
-              if (vpdFile && mplCompiler) {
-                const result = await mplCompiler.reverse_compile(file.name, vpdFile);
-                setJsonState(prev => [...(prev || []), { prompt: undefined, answer: JSON.stringify(result) }]);
-              }
-            }
-          }
-        }}
+        onDrop={handleDrop}
         onDragOver={(e: React.DragEvent) => {
-          e.preventDefault();
+          e.preventDefault()
         }}
-        onClick={() => {
-          const input = document.createElement('input');
-          input.type = 'file';
-          input.accept = '.vpd';
-          input.multiple = true;
-          input.onchange = async (e) => {
-            const target = e.target as HTMLInputElement;
-            if (target.files) {
-              const files = Array.from(target.files);
-              for (const file of files) {
-                if (!processedFiles.has(file.name)) {
-                  console.log('Processing selected file:', file.name);
-                  setProcessedFiles(prev => new Set([...prev, file.name]));
-
-                  const fileUrl = URL.createObjectURL(file);
-                  const vpdFile = await loadVPD(fileUrl);
-                  if (vpdFile && mplCompiler) {
-                    const result = await mplCompiler.reverse_compile(`pose_ai`, vpdFile);
-                    setJsonState(prev => [...(prev || []), { prompt: undefined, answer: JSON.stringify(result) }]);
-                  }
-                }
-              }
-            }
-          };
-          input.click();
-        }}
+        onClick={handleClick}
       >
         <div className="text-4xl mb-4">📁</div>
         <p className="text-lg font-medium mb-2">{t.guide.clickAndSelect}</p>
         <p className="text-gray-500">
           {t.guide.allowedExtentionText}
         </p>
+        <p className="text-sm text-gray-400 mt-2">
+          {t.guide.supportedFormats.images} • {t.guide.supportedFormats.videos} • VPD • VMD
+        </p>
       </div>
+
+      {/* Кнопки управления */}
       <div className='mt-4 flex gap-2'>
-        <Button onClick={() => {
-          //{"messages": [{"role": "system", "content": "Generate MMD Pose Language (MPL) script from description."}, {"role": "user", "content": "Description: A pose"}, {"role": "assistant", "content": ""}]}
-          const result = jsonState?.map(el => {
-            return JSON.stringify({
-              messages: [
-                { role: "system", content: "Generate MMD Pose Language (MPL) script from description." },
-                { role: "user", content: `Description: ${el.prompt}` },
-                { role: "assistant", content: JSON.parse(el.answer) }
-              ]
+        <Button
+          onClick={() => {
+            const result = jsonState?.map(el => {
+              return JSON.stringify({
+                messages: [
+                  { role: "system", content: "Generate MMD Pose Language (MPL) script from description." },
+                  { role: "user", content: `Description: ${el.prompt}` },
+                  { role: "assistant", content: JSON.parse(el.answer) }
+                ]
+              })
             })
-          })
-          const blob = new Blob([result?.join('\n') || ''], { type: 'application/jsonl' })
-          const url = URL.createObjectURL(blob)
-          const a = document.createElement('a')
-          a.href = url
-          a.download = 'dataset.jsonl'
-          a.click()
-        }}>{t.guide.downloadTitle}</Button>
-        <Button onClick={() => {
-          setJsonState([])
-          setProcessedFiles(new Set())
-        }}>{t.guide.clearAllTitle}</Button>
+            const blob = new Blob([result?.join('\n') || ''], { type: 'application/jsonl' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = 'dataset.jsonl'
+            a.click()
+          }}
+          disabled={!jsonState || jsonState.length === 0}
+        >
+          {t.guide.downloadTitle}
+        </Button>
+        <Button
+          onClick={() => {
+            setJsonState([])
+            setProcessedFiles(new Set())
+          }}
+          disabled={!jsonState || jsonState.length === 0}
+        >
+          {t.guide.clearAllTitle}
+        </Button>
       </div>
+
+      {/* Список обработанных файлов */}
       <div className='flex flex-wrap justify-center gap-2 mt-4 w-full'>
         {jsonState?.map((el, index) => {
-          return <div className='border-2 border-gray-300 rounded-lg p-2 w-full relative max-w-[400px]' key={index}>
-            <button type='button' className='cursor-pointer absolute size-8 flex items-center justify-center bg-red-500 text-white rounded-full  p-1 -top-2 -right-2' onClick={() => {
-              setJsonState(jsonState?.filter((item, i) => i !== index))
-            }}>X</button>
+          return (
+            <div className='border-2 border-gray-300 rounded-lg p-2 w-full relative max-w-[400px]' key={index}>
+              <div className='my-2 flex gap-x-2 justify-end'>
+                <button
+                  type="button"
+                  onClick={() => {
 
-            <input className='w-full mb-2 border-1 border-gray-300 rounded-md p-2' placeholder='Prompt' type="text" value={el.prompt} onChange={(e) => {
-              setJsonState(jsonState?.map((item, i) => {
-                if (i === index) {
-                  return { ...item, prompt: e.target.value }
-                }
-                return item
-              }))
-            }} />
-            {/* <div className='flex my-2'>
-              <button type='button' className='cursor-pointer flex items-center justify-center bg-blue-400 text-white rounded-md p-1'>
-                <FundViewOutlined /> Предпросмотр
-              </button>
-            </div> */}
-            <CodeViewer readOnly value={JSON.parse(el.answer)} />
-          </div>
+                  }}
+                  className="px-3 py-2 bg-gradient-to-r from-purple-500 to-blue-500 
+                     text-white rounded-lg font-medium text-sm
+                     hover:from-purple-600 hover:to-blue-600
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     transition-all duration-200 transform hover:scale-105 active:scale-95
+                     focus:outline-none focus:ring-2 focus:ring-purple-300
+                     flex items-center gap-1"
+
+                >
+
+                  <FiZap className="w-4 h-4" />
+                  <span>AI</span>
+
+                </button>
+
+                <button
+                  type='button'
+                  className='cursor-pointer px-3 py-2 flex items-center justify-center bg-red-500 text-white rounded-md'
+                  onClick={() => {
+                    setJsonState(jsonState?.filter((item, i) => i !== index))
+                  }}
+                >
+                  <FiX className='w-4 h-4' />
+                </button>
+              </div>
+              <input
+                className='w-full mb-2 border border-gray-300 rounded-md p-2'
+                placeholder='Prompt'
+                type="text"
+                value={el.prompt}
+                onChange={(e) => {
+                  setJsonState(jsonState?.map((item, i) => {
+                    if (i === index) {
+                      return { ...item, prompt: e.target.value }
+                    }
+                    return item
+                  }))
+                }}
+              />
+              <CodeViewer readOnly value={JSON.parse(el.answer)} />
+            </div>
+          )
         })}
-
       </div>
+
       <canvas className='hidden' ref={canvasRef} />
     </div>
   );
