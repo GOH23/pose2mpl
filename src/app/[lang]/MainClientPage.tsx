@@ -1,13 +1,14 @@
 "use client"
+import '@ant-design/v5-patch-for-react-19';
 import { Button, Collapse, message } from 'antd'
 import { useRef, useState, useEffect } from "react";
 import { useMPLCompiler } from "../ui/hooks/useMLPCompiler";
 import CodeViewer from '../ui/CodeViewer';
 import { FilesetResolver, HolisticLandmarker } from "@mediapipe/tasks-vision"
 import { FiX, FiZap } from 'react-icons/fi';
-import { Vector3, Quaternion } from "@babylonjs/core";
-import { BoneState, Solver } from '../ui/solver/mediapipe_solver';
+import { Solver, VmdBoneFrame, VmdWriter } from '../ui/solver/mediapipe_solver';
 import type { Dictionary } from '@/i18n/dictionaries';
+import { modelMLCAi } from '../ui/MLC_AI';
 
 export type jsonState = {
   prompt?: string,
@@ -15,14 +16,15 @@ export type jsonState = {
 }
 
 export function MainClientPage({ t }: { t: Dictionary }) {
-
-  const canvasRef = useRef(null)
   const mplCompiler = useMPLCompiler()
   const [jsonState, setJsonState] = useState<jsonState[]>()
   const [processedFiles, setProcessedFiles] = useState<Set<string>>(new Set())
   const [holisticLandmarker, setHolisticLandmarker] = useState<HolisticLandmarker | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
-
+  useEffect(()=>{
+    const test = new modelMLCAi()
+    test.init()
+  },[])
   // Инициализация MediaPipe Holistic
   useEffect(() => {
     let isMounted = true
@@ -55,26 +57,6 @@ export function MainClientPage({ t }: { t: Dictionary }) {
     }
   }, [t.guide.error.mediaPipeInit])
 
-  // Конвертация BoneState в MPL формат
-  const boneStatesToMPL = (boneStates: BoneState[], fileName: string): any => {
-    return {
-      metadata: {
-        source: fileName,
-        generated_at: new Date().toISOString(),
-        type: "pose"
-      },
-      bone_frames: boneStates.map(bs => ({
-        name: bs.name,
-        rotation: {
-          x: bs.rotation.x,
-          y: bs.rotation.y,
-          z: bs.rotation.z,
-          w: bs.rotation.w
-        },
-        position: { x: 0, y: 0, z: 0 }
-      }))
-    }
-  }
 
   // Обработка изображения
   const processImage = async (file: File) => {
@@ -165,23 +147,33 @@ export function MainClientPage({ t }: { t: Dictionary }) {
       }
 
       if (animationFrames.length > 0) {
-        const mplData = {
-          metadata: {
-            source: file.name,
-            generated_at: new Date().toISOString(),
-            type: "animation",
-            fps: fps,
-            frame_count: animationFrames.length
-          },
-          bone_animation: animationFrames.map(af => ({
-            frame: af.frame,
-            bone_states: boneStatesToMPL(af.boneStates, file.name).bone_frames
-          }))
-        }
 
+        const boneFrames: VmdBoneFrame[] = animationFrames.flatMap(animationFrame =>
+          animationFrame.boneStates.map(boneState => ({
+            boneName: boneState.name,
+            frame: animationFrame.frame,
+            rotation: boneState.rotation,
+            // Добавляем стандартные интерполяционные кривые для корректной работы
+            interpolation: new Uint8Array([
+              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение X
+              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение Y
+              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение Z
+              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение X (более плавное)
+              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение Y
+              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение Z
+              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение W
+              0, 0, 64, 64, 64, 64, 127, 127   // Физика/морфы (не используется)
+            ])
+          })))
+          
+        const fileData = await VmdWriter.ConvertToVmdBlob({
+          modelName: "Test",
+          boneFrames: boneFrames
+        }).arrayBuffer()
+        console.log(fileData)
         setJsonState(prev => [...(prev || []), {
           prompt: `Video animation: ${file.name} (${animationFrames.length} frames)`,
-          answer: JSON.stringify(mplData)
+          answer: JSON.stringify(mplCompiler!.reverse_compile("vmd", new Uint8Array(fileData)))
         }])
 
         message.success(`${file.name} processed successfully (${animationFrames.length} frames)`)
@@ -443,7 +435,6 @@ export function MainClientPage({ t }: { t: Dictionary }) {
         })}
       </div>
 
-      <canvas className='hidden' ref={canvasRef} />
     </div>
   );
 }

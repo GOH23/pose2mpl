@@ -1,6 +1,6 @@
 {
   "name": "pose2mpl",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -16,6 +16,7 @@
     "@codemirror/lint": "^6.9.2",
     "@formatjs/intl-localematcher": "^0.6.1",
     "@mediapipe/tasks-vision": "^0.10.22-rc.20250304",
+    "@mlc-ai/web-llm": "^0.2.79",
     "@uiw/react-codemirror": "^4.24.2",
     "antd": "^5.26.7",
     "babylon-mmd": "^0.68.0",

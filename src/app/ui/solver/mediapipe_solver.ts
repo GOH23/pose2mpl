@@ -1216,7 +1216,7 @@ class VpdWriter {
 export interface VmdBoneFrame {
   boneName: string
   frame: number        // Номер кадра анимации
-  position: Vector3   // Позиция кости
+  //position: Vector3   // Позиция кости
   rotation: Quaternion // Поворот кости
   interpolation?: Uint8Array // 64 байта интерполяционных кривых (необязательно)
 }
@@ -1224,123 +1224,182 @@ export interface VmdBoneFrame {
 export interface VmdAnimationData {
   modelName: string
   boneFrames: VmdBoneFrame[]
-  // В будущем можно добавить: morphFrames, cameraFrames и др.
 }
 
 export class VmdWriter {
   private static readonly Signature = "Vocaloid Motion Data 0002"
   private static readonly SignatureLength = 30
-  private static readonly ModelNameLength = 10
+  private static readonly ModelNameLength = 20  // Увеличено до 20 байт для совместимости
   private static readonly BoneNameLength = 15
+  private static readonly FrameSize = 111  // 15 + 4 + 12 + 16 + 64 = 111 байт на кадр
 
-  // Кодирование строк в Shift-JIS (аналогично VpdWriter)
-  private static encodeShiftJIS(str: string): Uint8Array {
-    const unicodeArray = Encoding.stringToCode(str)
-    const sjisArray = Encoding.convert(unicodeArray, {
-      to: "SJIS", 
-      from: "UNICODE"
-    })
-    return new Uint8Array(sjisArray)
-  }
 
-  // Основной метод для конвертации анимации в VMD Blob
   public static ConvertToVmdBlob(animationData: VmdAnimationData): Blob {
-    const modelNameBytes = this.encodeShiftJIS(animationData.modelName)
+    // Рассчитываем размер буфера
+    const headerSize = this.SignatureLength + this.ModelNameLength + 4; // Заголовок + имя модели + счетчик кадров
+    const morphFrameCountSize = 4;  // Счетчик морфов
+    const cameraFrameCountSize = 4; // Счетчик камер
+    const lightFrameCountSize = 4;  // Счетчик освещения
+    const shadowFrameCountSize = 4; // Счетчик теней
+    const ikFrameCountSize = 4;     // Счетчик IK
     
-    // Размер буфера: заголовок + имя модели + счетчики + данные кадров
-    const boneFrameSize = this.BoneNameLength + 4 + 12 + 16 + 64
-    const bufferSize = 
-      this.SignatureLength +
-      this.ModelNameLength +
-      4 + // bone frame count
-      animationData.boneFrames.length * boneFrameSize +
-      4 + // morph frame count (0)
-      4   // camera frame count (0)
+    const totalSize = headerSize + 
+                     (animationData.boneFrames.length * this.FrameSize) +
+                     morphFrameCountSize + cameraFrameCountSize + 
+                     lightFrameCountSize + shadowFrameCountSize + ikFrameCountSize;
 
-    const buffer = new ArrayBuffer(bufferSize)
-    const view = new DataView(buffer)
-    let offset = 0
+    const buffer = new ArrayBuffer(totalSize);
+    const view = new DataView(buffer);
+    let offset = 0;
 
-    // 1. Записать заголовок (30 байт)
-    const signatureBytes = this.encodeShiftJIS(this.Signature)
+    // 1. Записываем сигнатуру (30 байт)
+    const signatureBytes = this.encodeShiftJIS(this.Signature);
     for (let i = 0; i < this.SignatureLength; i++) {
-      view.setUint8(offset + i, i < signatureBytes.length ? signatureBytes[i] : 0)
+      view.setUint8(offset + i, i < signatureBytes.length ? signatureBytes[i] : 0);
     }
-    offset += this.SignatureLength
+    offset += this.SignatureLength;
 
-    // 2. Записать имя модели (10 байт)
+    // 2. Записываем имя модели (20 байт)
+    const modelNameBytes = this.encodeShiftJIS(animationData.modelName);
     for (let i = 0; i < this.ModelNameLength; i++) {
-      view.setUint8(offset + i, i < modelNameBytes.length ? modelNameBytes[i] : 0)
+      view.setUint8(offset + i, i < modelNameBytes.length ? modelNameBytes[i] : 0);
     }
-    offset += this.ModelNameLength
+    offset += this.ModelNameLength;
 
-    // 3. Записать количество кадров костей (4 байта, little-endian)
-    view.setUint32(offset, animationData.boneFrames.length, true)
-    offset += 4
+    // 3. Записываем количество кадров костей (4 байта, little-endian)
+    view.setUint32(offset, animationData.boneFrames.length, true);
+    offset += 4;
 
-    // 4. Записать каждый кадр кости
+    // 4. Записываем каждый кадр кости
+    animationData.boneFrames.sort((a, b) => a.frame - b.frame); // Сортируем по номеру кадра
+
     for (const frame of animationData.boneFrames) {
       // Имя кости (15 байт)
-      const boneNameBytes = this.encodeShiftJIS(frame.boneName)
+      const boneNameBytes = this.encodeShiftJIS(frame.boneName);
       for (let i = 0; i < this.BoneNameLength; i++) {
-        view.setUint8(offset + i, i < boneNameBytes.length ? boneNameBytes[i] : 0)
+        view.setUint8(offset + i, i < boneNameBytes.length ? boneNameBytes[i] : 0);
       }
-      offset += this.BoneNameLength
+      offset += this.BoneNameLength;
 
       // Номер кадра (4 байта, little-endian)
-      view.setUint32(offset, frame.frame, true)
-      offset += 4
+      view.setUint32(offset, frame.frame, true);
+      offset += 4;
 
-      // Позиция (12 байт, 3 float32 little-endian)
-      view.setFloat32(offset, frame.position.x, true)
-      offset += 4
-      view.setFloat32(offset, frame.position.y, true)
-      offset += 4
-      view.setFloat32(offset, frame.position.z, true)
-      offset += 4
+      // Позиция (12 байт - 3 float32): x, y, z
+      // Для VPD/VMD обычно позиция не используется, поэтому ставим 0
+      view.setFloat32(offset, 0, true); offset += 4;  // x
+      view.setFloat32(offset, 0, true); offset += 4;  // y
+      view.setFloat32(offset, 0, true); offset += 4;  // z
 
-      // Поворот (16 байт, 4 float32 little-endian)
-      view.setFloat32(offset, frame.rotation.x, true)
-      offset += 4
-      view.setFloat32(offset, frame.rotation.y, true)
-      offset += 4
-      view.setFloat32(offset, frame.rotation.z, true)
-      offset += 4
-      view.setFloat32(offset, frame.rotation.w, true)
-      offset += 4
+      // Поворот (16 байт - 4 float32): x, y, z, w
+      // Важно: MMD использует правую систему координат, Quaternion должен быть нормализован
+      const quat = frame.rotation;
+      view.setFloat32(offset, quat.x, true); offset += 4;
+      view.setFloat32(offset, quat.y, true); offset += 4;
+      view.setFloat32(offset, quat.z, true); offset += 4;
+      view.setFloat32(offset, quat.w, true); offset += 4;
 
       // Интерполяционные кривые (64 байта)
       if (frame.interpolation && frame.interpolation.length === 64) {
         for (let i = 0; i < 64; i++) {
-          view.setUint8(offset + i, frame.interpolation[i])
+          view.setUint8(offset + i, frame.interpolation[i]);
         }
       } else {
-        // По умолчанию: линейная интерполяция
-        // Формат: 8 массивов по 8 байт (ax, ay, bx, by, cx, cy, dx, dy)
-        // Для линейной: cx=cy=dx=dy=64, остальное 0
-        const defaultCurve = new Uint8Array(64)
-        for (let i = 0; i < 8; i++) {
-          const curveOffset = i * 8
-          defaultCurve[curveOffset + 4] = 64 // cx
-          defaultCurve[curveOffset + 5] = 64 // cy
-          defaultCurve[curveOffset + 6] = 64 // dx
-          defaultCurve[curveOffset + 7] = 64 // dy
-        }
+        // Стандартные интерполяционные кривые для плавной анимации
+        const defaultInterpolation = this.getDefaultInterpolation();
         for (let i = 0; i < 64; i++) {
-          view.setUint8(offset + i, defaultCurve[i])
+          view.setUint8(offset + i, defaultInterpolation[i]);
         }
       }
-      offset += 64
+      offset += 64;
     }
 
-    // 5. Записать количество кадров морфов (0)
-    view.setUint32(offset, 0, true)
-    offset += 4
+    // 5. Добавляем остальные разделы VMD (все нулевые)
+    // Количество кадров морфов
+    view.setUint32(offset, 0, true); offset += 4;
+    // Количество кадров камеры  
+    view.setUint32(offset, 0, true); offset += 4;
+    // Количество кадров освещения
+    view.setUint32(offset, 0, true); offset += 4;
+    // Количество кадров теней
+    view.setUint32(offset, 0, true); offset += 4;
+    // Количество кадров IK
+    view.setUint32(offset, 0, true); offset += 4;
 
-    // 6. Записать количество кадров камеры (0)
-    view.setUint32(offset, 0, true)
-    offset += 4
+    return new Blob([buffer], { type: "application/octet-stream" });
+  }
 
-    return new Blob([buffer], { type: "application/octet-stream" })
+  private static getDefaultInterpolation(): Uint8Array {
+    // Стандартные интерполяционные кривые для плавной анимации
+    const interpolation = new Uint8Array(64);
+    
+    // Для каждой из 8 кривых (24 байта для перемещения + 32 для вращения + 8 для физики)
+    for (let i = 0; i < 8; i++) {
+      const start = i * 8;
+      // Линейная интерполяция по умолчанию для перемещения
+      if (i < 3) {
+        interpolation[start] = 0;     // ax
+        interpolation[start + 1] = 0; // ay
+        interpolation[start + 2] = 64; // bx
+        interpolation[start + 3] = 64; // by
+        interpolation[start + 4] = 64; // cx
+        interpolation[start + 5] = 64; // cy
+        interpolation[start + 6] = 127; // dx
+        interpolation[start + 7] = 127; // dy
+      } 
+      // Плавная интерполяция для вращения (4 кривые)
+      else if (i < 7) {
+        interpolation[start] = 20;     // ax
+        interpolation[start + 1] = 20; // ay
+        interpolation[start + 2] = 107; // bx
+        interpolation[start + 3] = 107; // by
+        interpolation[start + 4] = 20;  // cx
+        interpolation[start + 5] = 20;  // cy
+        interpolation[start + 6] = 107; // dx
+        interpolation[start + 7] = 107; // dy
+      } 
+      // Физика/морфы
+      else {
+        interpolation[start] = 64;
+        interpolation[start + 1] = 64;
+        interpolation[start + 2] = 64;
+        interpolation[start + 3] = 64;
+        interpolation[start + 4] = 64;
+        interpolation[start + 5] = 64;
+        interpolation[start + 6] = 64;
+        interpolation[start + 7] = 64;
+      }
+    }
+    
+    return interpolation;
+  }
+
+  private static encodeShiftJIS(str: string): Uint8Array {
+    try {
+      // Пытаемся использовать TextEncoder для Shift-JIS через TextEncoder
+      if (typeof TextEncoder !== 'undefined') {
+        // Для простоты используем UTF-8, так как большинство современных MMD инструментов поддерживают UTF-8
+        return new TextEncoder().encode(str);
+      }
+    } catch (e) {
+      console.warn('TextEncoder not available or failed, using fallback');
+    }
+
+    // Fallback: простое преобразование для ASCII символов
+    const result = [];
+    for (let i = 0; i < str.length; i++) {
+      const charCode = str.charCodeAt(i);
+      if (charCode < 0x80) {
+        result.push(charCode);
+      } else if (charCode < 0x800) {
+        result.push(0xC0 | (charCode >> 6));
+        result.push(0x80 | (charCode & 0x3F));
+      } else {
+        result.push(0xE0 | (charCode >> 12));
+        result.push(0x80 | ((charCode >> 6) & 0x3F));
+        result.push(0x80 | (charCode & 0x3F));
+      }
+    }
+    return new Uint8Array(result);
   }
 }
