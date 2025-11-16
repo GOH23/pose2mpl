@@ -1,42 +1,31 @@
 {
-    "guide": {
-        "title": "📖 Beginner's Guide - HOW TO USE THE APP",
-        "howToUse1": "🎯 What does this app do?",
-        "howToUse2": "Converts MMD poses from .vpd format to MPL and creates datasets for AI training.",
-        "guide_instruction1": {
-            "instruction1": "📋 Step-by-step instructions:",
-            "instruction2": "Prepare .vpd files - find poses online or create them in MikuMikuDance",
-            "instruction3": "Upload files - drag and drop or click the upload area",
-            "instruction4": "Add descriptions - write a text description for each pose",
-            "instruction5": "Download dataset - click \"Download Dataset\" to create the file"
-        },
-        "howToUse3": "📤 Where to send the dataset?",
-        "howToUse4": "💡 Examples of pose descriptions:",
-        "guide_instruction2": {
-            "instruction1": "• \"Girl standing with right hand raised\"",
-            "instruction2": "• \"Dance pose with arms spread\"",
-            "instruction3": "• \"Greeting with a bow\"",
-            "instruction4": "• \"Sitting pose with a book\""
-        },
-        "downloadTitle": "Download",
-        "clearAllTitle": "Clear All",
-        "openSourceText": "Open source code",
-        "createIssue": "Create an issue and attach a dataset.jsonl file",
-        "clickAndSelect": "Click or drag .vpd file to download",
-        "allowedExtentionText": "Only files with the .vpd extension are allowed.",
-
-        "newFeatureTitle": "New Features",
-        "newFeatureText": "Now supports direct pose extraction from images and videos",
-        "supportedFormats": {
-            "images": "Images: JPG, PNG, WebP",
-            "videos": "Videos: MP4, WebM"
-        },
-        "processing": "Processing file...",
-        "error": {
-            "mediaPipeInit": "Failed to load MediaPipe",
-            "mediaPipeNotReady": "MediaPipe is not loaded yet. Please wait.",
-            "compilerNotReady": "MPL compiler is not ready",
-            "processError": "Error processing file"
-        }
-    }
+  "guide.title": "📖 Beginner's Guide - HOW TO USE THE APP",
+  "guide.howToUse1": "🎯 What does this app do?",
+  "guide.howToUse2": "Converts MMD poses from .vpd format to MPL and creates datasets for AI training.",
+  "guide.guide_instruction1.instruction1": "📋 Step-by-step instructions:",
+  "guide.guide_instruction1.instruction2": "Prepare .vpd files - find poses online or create them in MikuMikuDance",
+  "guide.guide_instruction1.instruction3": "Upload files - drag and drop or click the upload area",
+  "guide.guide_instruction1.instruction4": "Add descriptions - write a text description for each pose",
+  "guide.guide_instruction1.instruction5": "Download dataset - click \"Download Dataset\" to create the file",
+  "guide.howToUse3": "📤 Where to send the dataset?",
+  "guide.howToUse4": "💡 Examples of pose descriptions:",
+  "guide.guide_instruction2.instruction1": "• \"Girl standing with right hand raised\"",
+  "guide.guide_instruction2.instruction2": "• \"Dance pose with arms spread\"",
+  "guide.guide_instruction2.instruction3": "• \"Greeting with a bow\"",
+  "guide.guide_instruction2.instruction4": "• \"Sitting pose with a book\"",
+  "guide.downloadTitle": "Download",
+  "guide.clearAllTitle": "Clear All",
+  "guide.openSourceText": "Open source code",
+  "guide.createIssue": "Create an issue and attach a dataset.jsonl file",
+  "guide.clickAndSelect": "Click or drag .vpd file to download",
+  "guide.allowedExtentionText": "Only files with the .vpd extension are allowed.",
+  "guide.newFeatureTitle": "New Features",
+  "guide.newFeatureText": "Now supports direct pose extraction from images and videos",
+  "guide.supportedFormats.images": "Images: JPG, PNG, WebP",
+  "guide.supportedFormats.videos": "Videos: MP4, WebM",
+  "guide.processing": "Processing file...",
+  "guide.error.mediaPipeInit": "Failed to load MediaPipe",
+  "guide.error.mediaPipeNotReady": "MediaPipe is not loaded yet. Please wait.",
+  "guide.error.compilerNotReady": "MPL compiler is not ready",
+  "guide.error.processError": "Error processing file"
 }

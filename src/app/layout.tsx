@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 
 import "./globals.css";
-import { ReactNode } from "react";
-import { Locale } from "@/i18n/config";
+import { ReactNode, Suspense } from "react";
+import { LocaleProvider } from "@/i18n/LocaleProvider";
 
 export const metadata: Metadata = {
   title: "Create Next App",
@@ -11,17 +11,20 @@ export const metadata: Metadata = {
 
 export default async function RootLayout({
   children,
-  params,
 }: {
   children: ReactNode;
-  params: Promise<{ lang: Locale }>;
+
 }) {
-  const { lang } = await params;
+
   return (
-    <html lang={lang}>
+    <html>
       <body
       >
-        {children}
+        <LocaleProvider>
+          <Suspense>
+            {children}
+          </Suspense>
+        </LocaleProvider>
       </body>
     </html>
   );

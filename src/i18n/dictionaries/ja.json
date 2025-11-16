@@ -1,42 +1,31 @@
 {
-    "guide": {
-        "title": "📖 初心者ガイド - アプリケーションの使い方",
-        "howToUse1": "🎯 このアプリケーションの機能は？",
-        "howToUse2": "MMDポーズを.vpdフォーマットからMPLに変換し、AIトレーニング用のデータセットを作成します。",
-        "guide_instruction1": {
-            "instruction1": "📋 ステップバイステップの手順:",
-            "instruction2": ".vpdファイルを準備 - インターネットでポーズを探したり、MikuMikuDanceで作成します",
-            "instruction3": "ファイルをアップロード - ドラッグアンドドロップまたはアップロード領域をクリックします",
-            "instruction4": "説明を追加 - 各ポーズにテキスト説明を記入します",
-            "instruction5": "データセットをダウンロード - 「データセットをダウンロード」をクリックしてファイルを生成します"
-        },
-        "howToUse3": "📤 データセットをどこに送信しますか？",
-        "howToUse4": "💡 ポーズ説明の例:",
-        "guide_instruction2": {
-            "instruction1": "• 「右腕を上げて立っている少女」",
-            "instruction2": "• 「腕を広げたダンスポーズ」",
-            "instruction3": "• 「お辞儀を伴う挨拶」",
-            "instruction4": "• 「本を持った座り姿勢」"
-        },
-        "downloadTitle": "ダウンロード",
-        "clearAllTitle": "すべてクリア",
-        "openSourceText": "オープンソースコード",
-        "createIssue": "課題を作成し、データセットを添付します。jsonlファイル",
-        "clickAndSelect": "クリックまたはドラッグします。ダウンロードするvpdファイル",
-        "allowedExtentionText": "を持つファイルのみ。vpd拡張は許可されています。",
-
-        "newFeatureTitle": "新機能",
-        "newFeatureText": "画像とビデオから直接ポーズを抽出できるようになりました",
-        "supportedFormats": {
-            "images": "画像: JPG、PNG、WebP",
-            "videos": "ビデオ: MP4、WebM"
-        },
-        "processing": "ファイルを処理中...",
-        "error": {
-            "mediaPipeInit": "MediaPipeの読み込みに失敗しました",
-            "mediaPipeNotReady": "MediaPipeはまだ読み込まれていません。しばらくお待ちください。",
-            "compilerNotReady": "MPLコンパイラが準備できていません",
-            "processError": "ファイル処理中にエラーが発生しました"
-        }
-    }
+  "guide.title": "📖 初心者ガイド - アプリケーションの使い方",
+  "guide.howToUse1": "🎯 このアプリケーションの機能は？",
+  "guide.howToUse2": "MMDポーズを.vpdフォーマットからMPLに変換し、AIトレーニング用のデータセットを作成します。",
+  "guide.guide_instruction1.instruction1": "📋 ステップバイステップの手順:",
+  "guide.guide_instruction1.instruction2": ".vpdファイルを準備 - インターネットでポーズを探したり、MikuMikuDanceで作成します",
+  "guide.guide_instruction1.instruction3": "ファイルをアップロード - ドラッグアンドドロップまたはアップロード領域をクリックします",
+  "guide.guide_instruction1.instruction4": "説明を追加 - 各ポーズにテキスト説明を記入します",
+  "guide.guide_instruction1.instruction5": "データセットをダウンロード - 「データセットをダウンロード」をクリックしてファイルを生成します",
+  "guide.howToUse3": "📤 データセットをどこに送信しますか？",
+  "guide.howToUse4": "💡 ポーズ説明の例:",
+  "guide.guide_instruction2.instruction1": "• 「右腕を上げて立っている少女」",
+  "guide.guide_instruction2.instruction2": "• 「腕を広げたダンスポーズ」",
+  "guide.guide_instruction2.instruction3": "• 「お辞儀を伴う挨拶」",
+  "guide.guide_instruction2.instruction4": "• 「本を持った座り姿勢」",
+  "guide.downloadTitle": "ダウンロード",
+  "guide.clearAllTitle": "すべてクリア",
+  "guide.openSourceText": "オープンソースコード",
+  "guide.createIssue": "課題を作成し、データセットを添付します。jsonlファイル",
+  "guide.clickAndSelect": "クリックまたはドラッグします。ダウンロードするvpdファイル",
+  "guide.allowedExtentionText": "を持つファイルのみ。vpd拡張は許可されています。",
+  "guide.newFeatureTitle": "新機能",
+  "guide.newFeatureText": "画像とビデオから直接ポーズを抽出できるようになりました",
+  "guide.supportedFormats.images": "画像: JPG、PNG、WebP",
+  "guide.supportedFormats.videos": "ビデオ: MP4、WebM",
+  "guide.processing": "ファイルを処理中...",
+  "guide.error.mediaPipeInit": "MediaPipeの読み込みに失敗しました",
+  "guide.error.mediaPipeNotReady": "MediaPipeはまだ読み込まれていません。しばらくお待ちください。",
+  "guide.error.compilerNotReady": "MPLコンパイラが準備できていません",
+  "guide.error.processError": "ファイル処理中にエラーが発生しました"
 }
