@@ -30,7 +30,7 @@ export class modelMLCAi {
         const modelCfg: webllm.AppConfig = {
             model_list: [
                 {
-                    model: `${window.origin}/Qwen3-1.7B-q4f32_1-MLC`,
+                    model: `https://huggingface.co/mlc-ai/Qwen3-1.7B-q4f32_1-MLC`,
                     model_id: "Qwen3-1.7B-q4f32_1-MLC",
                     model_lib:
                         webllm.modelLibURLPrefix +
@@ -38,8 +38,10 @@ export class modelMLCAi {
                         "/Qwen3-1.7B-q4f32_1-ctx4k_cs1k-webgpu.wasm",
 
                     low_resource_required: true,
+                    
                 },
             ],
+            useIndexedDBCache: true
         };
         const selectedModel = "Qwen3-1.7B-q4f32_1-MLC";
         const eng = await webllm.CreateMLCEngine(
