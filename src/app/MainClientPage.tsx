@@ -1,16 +1,16 @@
 "use client"
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, SetStateAction } from "react";
 import { useMPLCompiler } from "./ui/hooks/useMLPCompiler";
 import CodeViewer from './ui/CodeViewer';
 import { FilesetResolver, HolisticLandmarker } from "@mediapipe/tasks-vision"
-//import { FiX, FiZap } from 'react-icons/fi';
+
 import { Solver, VmdBoneFrame, VmdWriter } from '../lib/solver/mediapipe_solver';
 
 import { modelMLCAi } from '@/lib/ai/MLC_AI';
 import { useTranslation } from '@/i18n/LocaleProvider';
-import Collapse from "./ui/Collapse";
+
 import { Button } from "./ui/Button";
-import { useMessage } from "./ui/hooks/useMessage";
+import BlockMpl from "./ui/BlockMpl";
 
 export type jsonState = {
   prompt?: string,
@@ -18,17 +18,22 @@ export type jsonState = {
 }
 
 export function MainClientPage() {
+  const ai_model = useRef<modelMLCAi>(null)
+  const [isProcessingAll, setIsProcessingAll] = useState(false)
+  const [loadingStates, setLoadingStates] = useState<Record<string, boolean>>({});
   const tr = useTranslation()
-  const message = useMessage();                  
+
   const mplCompiler = useMPLCompiler()
   const [jsonState, setJsonState] = useState<jsonState[]>()
   const [processedFiles, setProcessedFiles] = useState<Set<string>>(new Set())
   const [holisticLandmarker, setHolisticLandmarker] = useState<HolisticLandmarker | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
-  useEffect(()=>{
-    const test = new modelMLCAi()
-    test.init()
-  },[])
+  useEffect(() => {
+    ai_model.current = new modelMLCAi();
+    ai_model.current.init().then(() => {
+      console.log("Init engine")
+    })
+  }, [])
   // Инициализация MediaPipe Holistic
   useEffect(() => {
     let isMounted = true
@@ -50,7 +55,7 @@ export function MainClientPage() {
         }
       } catch (error) {
         console.error("Failed to initialize MediaPipe:", error)
-        message.error(tr("guide.error.mediaPipeInit"))
+
       }
     }
 
@@ -65,7 +70,7 @@ export function MainClientPage() {
   // Обработка изображения
   const processImage = async (file: File) => {
     if (!holisticLandmarker) {
-      message.warning(tr("guide.error.mediaPipeNotReady"))
+
       return
     }
 
@@ -86,14 +91,12 @@ export function MainClientPage() {
             answer: JSON.stringify(mplCompiler.reverse_compile("vpd", new Uint8Array(vpdArrayBuffer)))
           }])
 
-          message.success(`${file.name} processed successfully`)
         }
       } else {
-        message.warning(`No pose detected in ${file.name}`)
       }
     } catch (error) {
       console.error(`Error processing image ${file.name}:`, error)
-      message.error(`${tr("guide.error.processError")}: ${file.name}`)
+
     } finally {
       setIsProcessing(false)
     }
@@ -102,7 +105,7 @@ export function MainClientPage() {
   // Обработка видео
   const processVideo = async (file: File) => {
     if (!holisticLandmarker) {
-      message.warning(tr("guide.error.mediaPipeNotReady"))
+
       return
     }
 
@@ -156,19 +159,19 @@ export function MainClientPage() {
             boneName: boneState.name,
             frame: animationFrame.frame,
             rotation: boneState.rotation,
-            // Добавляем стандартные интерполяционные кривые для корректной работы
+
             interpolation: new Uint8Array([
-              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение X
-              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение Y
-              0, 0, 64, 64, 64, 64, 127, 127,  // Перемещение Z
-              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение X (более плавное)
-              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение Y
-              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение Z
-              20, 20, 107, 107, 20, 20, 107, 107,  // Вращение W
-              0, 0, 64, 64, 64, 64, 127, 127   // Физика/морфы (не используется)
+              0, 0, 64, 64, 64, 64, 127, 127,
+              0, 0, 64, 64, 64, 64, 127, 127,
+              0, 0, 64, 64, 64, 64, 127, 127,
+              20, 20, 107, 107, 20, 20, 107, 107,
+              20, 20, 107, 107, 20, 20, 107, 107,
+              20, 20, 107, 107, 20, 20, 107, 107,
+              20, 20, 107, 107, 20, 20, 107, 107,
+              0, 0, 64, 64, 64, 64, 127, 127
             ])
           })))
-          
+
         const fileData = await VmdWriter.ConvertToVmdBlob({
           modelName: "Test",
           boneFrames: boneFrames
@@ -179,13 +182,12 @@ export function MainClientPage() {
           answer: JSON.stringify(mplCompiler!.reverse_compile("vmd", new Uint8Array(fileData)))
         }])
 
-        message.success(`${file.name} processed successfully (${animationFrames.length} frames)`)
       } else {
-        message.warning(`No pose detected in ${file.name}`)
+
       }
     } catch (error) {
       console.error(`Error processing video ${file.name}:`, error)
-      message.error(`${tr("guide.error.processError")}: ${file.name}`)
+
     } finally {
       setIsProcessing(false)
       holisticLandmarker?.setOptions({ runningMode: "IMAGE" })
@@ -196,7 +198,7 @@ export function MainClientPage() {
   // Унифицированная обработка файлов
   const processFile = async (file: File) => {
     if (processedFiles.has(file.name)) {
-      message.info(`${file.name} already processed`)
+
       return
     }
 
@@ -204,7 +206,7 @@ export function MainClientPage() {
 
     if (file.name.endsWith('.vpd') || file.name.endsWith(".vmd")) {
       if (!mplCompiler) {
-        message.warning(tr("guide.error.compilerNotReady"))
+
         return
       }
       try {
@@ -218,14 +220,14 @@ export function MainClientPage() {
         }])
       } catch (error) {
         console.error(`Error processing ${file.name}:`, error)
-        message.error(`${tr("guide.error.processError")}: ${file.name}`)
+
       }
     } else if (file.type.startsWith('image/')) {
       await processImage(file)
     } else if (file.type.startsWith('video/')) {
       await processVideo(file)
     } else {
-      message.warning(`Unsupported file type: ${file.name}`)
+
     }
   }
 
@@ -257,66 +259,8 @@ export function MainClientPage() {
   }
 
   return (
-    <div className="flex flex-col items-center py-4 justify-center">
-      {/* Информационная панель */}
-      <div className="w-full max-w-4xl mb-6">
-        <Collapse
-          defaultActiveKey={['1']}
-          items={[
-            {
-              key: '1',
-              label: tr("guide.title"),
-              children: (
-                <div className="space-y-4">
-                  <div className="bg-blue-50 p-4 rounded-lg">
-                    <h3 className="font-bold text-lg mb-2">{tr("guide.howToUse1")}</h3>
-                    <p>{tr("guide.howToUse2")}</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <h4 className="font-semibold">{tr("guide.guide_instruction1.instruction1")}</h4>
-                    <ol className="list-decimal list-inside space-y-1 ml-4">
-                      <li>{tr("guide.guide_instruction1.instruction2")}</li>
-                      <li>{tr("guide.guide_instruction1.instruction3")}</li>
-                      <li>{tr("guide.guide_instruction1.instruction4")}</li>
-                      <li>{tr("guide.guide_instruction1.instruction5")}</li>
-                    </ol>
-                  </div>,
-
-                  <div className="bg-purple-50 p-4 rounded-lg">
-                    <h4 className="font-semibold mb-2">{tr("guide.newFeatureTitle")}</h4>
-                    <p>{tr("guide.newFeatureText")}</p>
-                    <ul className="list-disc list-inside ml-4 mt-2">
-                      <li>• {tr("guide.supportedFormats.images")}</li>
-                      <li>• {tr("guide.supportedFormats.videos")}</li>
-                    </ul>
-                  </div>
-
-                  <div className="bg-yellow-50 p-4 rounded-lg">
-                    <h4 className="font-semibold mb-2">{tr("guide.howToUse2")}</h4>
-                    <ul className="space-y-1">
-                      <li>• <strong>GitHub Issues:</strong> <a href="https://github.com/GOH23/pose2mpl/issues" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{tr("guide.createIssue")}</a></li>
-                      <li>• <strong>Email:</strong> <a href="mailto:goh10117@gmail.com" className="text-blue-600 hover:underline">goh10117@gmail.com</a></li>
-                      <li>• <strong>Telegram:</strong> <a href="https://t.me/goh222" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">@goh222</a></li>
-                      <li>• <strong>GitHub:</strong> <a href="https://github.com/GOH23/pose2mpl" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{tr("guide.openSourceText")}</a></li>
-                    </ul>
-                  </div>
-
-                  <div className="bg-green-50 p-4 rounded-lg">
-                    <h4 className="font-semibold mb-2">{tr("guide.howToUse4")}</h4>
-                    <ul className="space-y-1">
-                      <li>{tr("guide.guide_instruction2.instruction1")}</li>
-                      <li>{tr("guide.guide_instruction2.instruction2")}</li>
-                      <li>{tr("guide.guide_instruction2.instruction3")}</li>
-                      <li>{tr("guide.guide_instruction2.instruction4")}</li>
-                    </ul>
-                  </div>
-                </div>
-              )
-            }
-          ]}
-        />
-      </div>
+    <div className="flex flex-col mt-[100px] items-center py-4 justify-center">
+      
 
       {/* Индикатор обработки */}
       {isProcessing && (
@@ -380,62 +324,125 @@ export function MainClientPage() {
         >
           {tr("guide.clearAllTitle")}
         </Button>
+
+        <button
+          onClick={async () => {
+            if (!jsonState?.length || !ai_model.current) {
+              alert('Нет элементов для обработки или AI модель не инициализирована');
+              return;
+            }
+
+            // Проверка размера данных перед обработкой
+            const oversizedItems = jsonState.filter(item => item.answer.length > 50000);
+            if (oversizedItems.length > 0) {
+              alert(`Найдено ${oversizedItems.length} элементов с слишком большими данными. Попробуйте удалить их.`);
+              return;
+            }
+
+            setIsProcessingAll(true);
+            const results = { processed: 0, failed: 0 };
+
+            // Последовательная обработка с задержкой
+            for (let index = 0; index < jsonState.length; index++) {
+              const item = jsonState[index];
+              if (!item.answer?.trim()) continue;
+
+              setLoadingStates(prev => ({ ...prev, [index]: true }));
+
+              try {
+                // Задержка 500мс между запросами для стабильности
+                if (index > 0) {
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                }
+
+                let response = '';
+                await ai_model.current.message(item.answer, (chunk) => {
+                  response += chunk;
+                });
+
+                const processedContent = response.split("</think>")[1] || '';
+
+                // Обновляем сразу после каждого элемента
+                setJsonState(prev => {
+                  if (!prev) return [];
+                  const updated = [...prev];
+                  if (updated[index]) {
+                    updated[index] = { ...updated[index], prompt: processedContent };
+                  }
+                  return updated;
+                });
+
+                results.processed++;
+              } catch (error) {
+                console.error(`Ошибка для элемента ${index}:`, error);
+                results.failed++;
+              } finally {
+                setLoadingStates(prev => {
+                  const newState = { ...prev };
+                  delete newState[index];
+                  return newState;
+                });
+              }
+            }
+
+            // Итоговое сообщение
+            if (results.failed > 0) {
+              alert(`Обработано: ${results.processed}, ошибок: ${results.failed}`);
+            } else if (results.processed > 0) {
+
+            }
+
+            setIsProcessingAll(false);
+          }}
+          disabled={!jsonState?.length || isProcessingAll}
+          className="px-6 py-3 bg-gradient-to-r from-purple-600 to-blue-600 
+               text-white rounded-lg font-medium 
+               hover:from-purple-700 hover:to-blue-700
+               disabled:opacity-50 disabled:cursor-not-allowed
+               transition-all duration-200 transform hover:scale-105
+               focus:outline-none focus:ring-2 focus:ring-purple-300
+               flex items-center gap-2"
+        >
+          {isProcessingAll ? (
+            <>
+              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Обработка {Object.keys(loadingStates).length}/{jsonState?.length || 0}...
+            </>
+          ) : (
+            <>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                <polyline points="22,6 12,13 2,6" />
+              </svg>
+              AI для всех
+            </>
+          )}
+        </button>
+
       </div>
 
-      {/* Список обработанных файлов */}
+
       <div className='flex flex-wrap justify-center gap-2 mt-4 w-full'>
-        {jsonState?.map((el, index) => {
+        {jsonState?.map((item, index) => {
+          // Безопасный парсинг JSON с обработкой ошибок
+          let parsedAnswer;
+          try {
+            parsedAnswer = JSON.parse(item.answer);
+          } catch {
+            parsedAnswer = { error: 'Невалидный JSON' };
+          }
+
+          const isLoading = loadingStates[index];
+
           return (
-            <div className='border-2 border-gray-300 rounded-lg p-2 w-full relative max-w-[400px]' key={index}>
-              <div className='my-2 flex gap-x-2 justify-end'>
-                <button
-                  type="button"
-                  onClick={() => {
-
-                  }}
-                  className="px-3 py-2 bg-gradient-to-r from-purple-500 to-blue-500 
-                     text-white rounded-lg font-medium text-sm
-                     hover:from-purple-600 hover:to-blue-600
-                     disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-all duration-200 transform hover:scale-105 active:scale-95
-                     focus:outline-none focus:ring-2 focus:ring-purple-300
-                     flex items-center gap-1"
-
-                >
-
-                  <span>AI</span>
-
-                </button>
-
-                <button
-                  type='button'
-                  className='cursor-pointer px-3 py-2 flex items-center justify-center bg-red-500 text-white rounded-md'
-                  onClick={() => {
-                    setJsonState(jsonState?.filter((item, i) => i !== index))
-                  }}
-                >
-                  X
-                </button>
-              </div>
-              <input
-                className='w-full mb-2 border border-gray-300 rounded-md p-2'
-                placeholder='Prompt'
-                type="text"
-                value={el.prompt}
-                onChange={(e) => {
-                  setJsonState(jsonState?.map((item, i) => {
-                    if (i === index) {
-                      return { ...item, prompt: e.target.value }
-                    }
-                    return item
-                  }))
-                }}
-              />
-              <CodeViewer readOnly value={JSON.parse(el.answer)} />
-            </div>
+           <BlockMpl mplCompiler={mplCompiler!} key={index} isLoading={isLoading} ai_model={ai_model.current!} parsedAnswer={parsedAnswer} item={item} index={index} setJsonState={setJsonState} setLoadingStates={setLoadingStates} />
           )
         })}
       </div>
+
 
     </div>
   );

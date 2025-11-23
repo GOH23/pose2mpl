@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ReactNode, Suspense } from "react";
 import { LocaleProvider } from "@/i18n/LocaleProvider";
+import { Header } from "./ui/Header";
 
 export const metadata: Metadata = {
   title: "Create Next App",
@@ -22,6 +23,7 @@ export default async function RootLayout({
       >
         <LocaleProvider>
           <Suspense>
+            <Header/>
             {children}
           </Suspense>
         </LocaleProvider>

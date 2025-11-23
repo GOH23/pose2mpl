@@ -1,4 +1,5 @@
-import { Matrix, Quaternion, Vector3 } from "@babylonjs/core"
+
+import { Vec3 as Vector3, Mat4 as Matrix, Quat as Quaternion } from "../engine/math"
 import { HolisticLandmarkerResult, Landmark } from "@mediapipe/tasks-vision"
 import Encoding from "encoding-japanese"
 
@@ -128,7 +129,7 @@ export class Solver {
   private rightHandWorldLandmarks: Landmark[] | null = null
   private boneStates: Record<string, BoneState> = {}
 
-  constructor() {}
+  constructor() { }
 
   solve(landmarks: HolisticLandmarkerResult): BoneState[] | null {
     this.boneStates = {}
@@ -201,7 +202,7 @@ export class Solver {
     return Object.values(this.boneStates)
   }
 
-  exportToVpdBlob(modelName: string = "MotionCapture",boneStates: BoneState[]): Blob {
+  exportToVpdBlob(modelName: string = "MotionCapture", boneStates: BoneState[]): Blob {
     const poseData = Object.values(boneStates)
     return VpdWriter.ConvertToVpdBlob(poseData, modelName)
   }
@@ -230,7 +231,7 @@ export class Solver {
     const leftHip = this.getPoseLandmark("left_hip")
     const rightHip = this.getPoseLandmark("right_hip")
 
-    if (!leftHip || !rightHip) return { name: "下半身", rotation: Quaternion.Identity() }
+    if (!leftHip || !rightHip) return { name: "下半身", rotation: Quaternion.identity() }
 
     const hipDirection = leftHip.subtract(rightHip).normalize()
     const referenceDirection = new Vector3(1, 0, 0)
@@ -245,7 +246,7 @@ export class Solver {
     const leftShoulder = this.getPoseLandmark("left_shoulder")
     const rightShoulder = this.getPoseLandmark("right_shoulder")
 
-    if (!leftShoulder || !rightShoulder) return { name: "上半身", rotation: Quaternion.Identity() }
+    if (!leftShoulder || !rightShoulder) return { name: "上半身", rotation: Quaternion.identity() }
 
     const shoulderCenter = leftShoulder.add(rightShoulder).scale(0.5)
 
@@ -253,25 +254,27 @@ export class Solver {
 
     const spineY = shoulderCenter.normalize()
 
-    const upperBodyZ = Vector3.Cross(shoulderX, spineY).normalize()
+    const upperBodyZ = Vector3.cross(shoulderX, spineY).normalize()
 
     const upperBodyMatrix = Matrix.FromValues(
-      shoulderX.x,
-      shoulderX.y,
-      shoulderX.z,
-      0,
-      spineY.x,
-      spineY.y,
-      spineY.z,
-      0,
-      upperBodyZ.x,
-      upperBodyZ.y,
-      upperBodyZ.z,
-      0,
-      0,
-      0,
-      0,
-      1
+      [
+        shoulderX.x,
+        shoulderX.y,
+        shoulderX.z,
+        0,
+        spineY.x,
+        spineY.y,
+        spineY.z,
+        0,
+        upperBodyZ.x,
+        upperBodyZ.y,
+        upperBodyZ.z,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
     )
 
     const scaling = new Vector3()
@@ -292,7 +295,7 @@ export class Solver {
     const worldRightShoulder = this.getPoseLandmark("right_shoulder")
 
     if (!worldLeftEar || !worldRightEar || !worldLeftShoulder || !worldRightShoulder)
-      return { name: "首", rotation: Quaternion.Identity() }
+      return { name: "首", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const upperBodyMatrix = new Matrix()
@@ -323,7 +326,7 @@ export class Solver {
     const worldRightEye = this.getPoseLandmark("right_eye")
 
     if (!worldLeftEar || !worldRightEar || !worldLeftEye || !worldRightEye)
-      return { name: "頭", rotation: Quaternion.Identity() }
+      return { name: "頭", rotation: Quaternion.identity() }
 
     // Use full parent chain: upper_body * neck
     const upperBodyQuat = this.boneStates["upper_body"].rotation
@@ -362,7 +365,7 @@ export class Solver {
     const worldLeftHip = this.getPoseLandmark("left_hip")
     const worldLeftKnee = this.getPoseLandmark("left_knee")
 
-    if (!worldLeftHip || !worldLeftKnee) return { name: "左足", rotation: Quaternion.Identity() }
+    if (!worldLeftHip || !worldLeftKnee) return { name: "左足", rotation: Quaternion.identity() }
 
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
     const lowerBodyMatrix = new Matrix()
@@ -385,7 +388,7 @@ export class Solver {
     const worldRightHip = this.getPoseLandmark("right_hip")
     const worldRightKnee = this.getPoseLandmark("right_knee")
 
-    if (!worldRightHip || !worldRightKnee) return { name: "右足", rotation: Quaternion.Identity() }
+    if (!worldRightHip || !worldRightKnee) return { name: "右足", rotation: Quaternion.identity() }
 
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
     const lowerBodyMatrix = new Matrix()
@@ -409,7 +412,7 @@ export class Solver {
     const worldLeftKnee = this.getPoseLandmark("left_knee")
     const worldLeftAnkle = this.getPoseLandmark("left_ankle")
 
-    if (!worldLeftKnee || !worldLeftAnkle) return { name: "左ひざ", rotation: Quaternion.Identity() }
+    if (!worldLeftKnee || !worldLeftAnkle) return { name: "左ひざ", rotation: Quaternion.identity() }
 
     const leftLegQuat = this.boneStates["left_leg"].rotation
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
@@ -435,7 +438,7 @@ export class Solver {
     const worldRightKnee = this.getPoseLandmark("right_knee")
     const worldRightAnkle = this.getPoseLandmark("right_ankle")
 
-    if (!worldRightKnee || !worldRightAnkle) return { name: "右ひざ", rotation: Quaternion.Identity() }
+    if (!worldRightKnee || !worldRightAnkle) return { name: "右ひざ", rotation: Quaternion.identity() }
 
     const rightLegQuat = this.boneStates["right_leg"].rotation
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
@@ -461,7 +464,7 @@ export class Solver {
     const worldLeftHeel = this.getPoseLandmark("left_heel")
     const worldLeftFootIndex = this.getPoseLandmark("left_foot_index")
 
-    if (!worldLeftHeel || !worldLeftFootIndex) return { name: "左足首", rotation: Quaternion.Identity() }
+    if (!worldLeftHeel || !worldLeftFootIndex) return { name: "左足首", rotation: Quaternion.identity() }
 
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
     const leftLegQuat = this.boneStates["left_leg"].rotation
@@ -488,7 +491,7 @@ export class Solver {
     const worldRightHeel = this.getPoseLandmark("right_heel")
     const worldRightFootIndex = this.getPoseLandmark("right_foot_index")
 
-    if (!worldRightHeel || !worldRightFootIndex) return { name: "右足首", rotation: Quaternion.Identity() }
+    if (!worldRightHeel || !worldRightFootIndex) return { name: "右足首", rotation: Quaternion.identity() }
 
     // Full parent chain: lower_body * right_leg * right_knee
     const lowerBodyQuat = this.boneStates["lower_body"].rotation
@@ -516,7 +519,7 @@ export class Solver {
     const worldLeftShoulder = this.getPoseLandmark("left_shoulder")
     const worldLeftElbow = this.getPoseLandmark("left_elbow")
 
-    if (!worldLeftShoulder || !worldLeftElbow) return { name: "左腕", rotation: Quaternion.Identity() }
+    if (!worldLeftShoulder || !worldLeftElbow) return { name: "左腕", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const upperBodyMatrix = new Matrix()
@@ -539,7 +542,7 @@ export class Solver {
     const worldRightShoulder = this.getPoseLandmark("right_shoulder")
     const worldRightElbow = this.getPoseLandmark("right_elbow")
 
-    if (!worldRightShoulder || !worldRightElbow) return { name: "右腕", rotation: Quaternion.Identity() }
+    if (!worldRightShoulder || !worldRightElbow) return { name: "右腕", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const upperBodyMatrix = new Matrix()
@@ -562,7 +565,7 @@ export class Solver {
     const worldLeftElbow = this.getPoseLandmark("left_elbow")
     const worldLeftWrist = this.getPoseLandmark("left_wrist")
 
-    if (!worldLeftElbow || !worldLeftWrist) return { name: "左ひじ", rotation: Quaternion.Identity() }
+    if (!worldLeftElbow || !worldLeftWrist) return { name: "左ひじ", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -588,7 +591,7 @@ export class Solver {
     const worldRightElbow = this.getPoseLandmark("right_elbow")
     const worldRightWrist = this.getPoseLandmark("right_wrist")
 
-    if (!worldRightElbow || !worldRightWrist) return { name: "右ひじ", rotation: Quaternion.Identity() }
+    if (!worldRightElbow || !worldRightWrist) return { name: "右ひじ", rotation: Quaternion.identity() }
 
     const rightArmQuat = this.boneStates["right_arm"].rotation
     const upperBodyQuat = this.boneStates["upper_body"].rotation
@@ -615,7 +618,7 @@ export class Solver {
     const worldLeftIndex = this.getLeftHandLandmark("index_mcp")
     const worldLeftRing = this.getLeftHandLandmark("ring_mcp")
 
-    if (!worldLeftWrist || !worldLeftIndex || !worldLeftRing) return { name: "左手捩", rotation: Quaternion.Identity() }
+    if (!worldLeftWrist || !worldLeftIndex || !worldLeftRing) return { name: "左手捩", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -647,7 +650,7 @@ export class Solver {
     const worldRightIndex = this.getRightHandLandmark("index_mcp")
     const worldRightRing = this.getRightHandLandmark("ring_mcp")
     if (!worldRightWrist || !worldRightIndex || !worldRightRing)
-      return { name: "右手捩", rotation: Quaternion.Identity() }
+      return { name: "右手捩", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -680,7 +683,7 @@ export class Solver {
     const worldLeftWrist = this.getLeftHandLandmark("wrist")
     const worldLeftMiddleMcp = this.getLeftHandLandmark("middle_mcp")
 
-    if (!worldLeftWrist || !worldLeftMiddleMcp) return { name: "左手首", rotation: Quaternion.Identity() }
+    if (!worldLeftWrist || !worldLeftMiddleMcp) return { name: "左手首", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -708,7 +711,7 @@ export class Solver {
     const worldRightWrist = this.getRightHandLandmark("wrist")
     const worldRightMiddleMcp = this.getRightHandLandmark("index_mcp")
 
-    if (!worldRightWrist || !worldRightMiddleMcp) return { name: "右手首", rotation: Quaternion.Identity() }
+    if (!worldRightWrist || !worldRightMiddleMcp) return { name: "右手首", rotation: Quaternion.identity() }
 
     // Full parent chain: upper_body * right_arm * right_elbow
     const upperBodyQuat = this.boneStates["upper_body"].rotation
@@ -736,7 +739,7 @@ export class Solver {
   private solveLeftThumb1(): BoneState {
     const thumbMCP = this.getLeftHandLandmark("thumb_mcp")
     const thumbIP = this.getLeftHandLandmark("thumb_ip")
-    if (!thumbMCP || !thumbIP) return { name: "左親指１", rotation: Quaternion.Identity() }
+    if (!thumbMCP || !thumbIP) return { name: "左親指１", rotation: Quaternion.identity() }
 
     // Get full parent chain including thumb base
     const upperBodyQuat = this.boneStates["upper_body"].rotation
@@ -774,7 +777,7 @@ export class Solver {
     const wrist = this.getLeftHandLandmark("wrist")
     const indexMCP = this.getLeftHandLandmark("index_mcp")
     const indexPIP = this.getLeftHandLandmark("index_pip")
-    if (!wrist || !indexMCP || !indexPIP) return { name: "左人指１", rotation: Quaternion.Identity() }
+    if (!wrist || !indexMCP || !indexPIP) return { name: "左人指１", rotation: Quaternion.identity() }
 
     // Get full parent chain including index base
     const upperBodyQuat = this.boneStates["upper_body"].rotation
@@ -817,7 +820,7 @@ export class Solver {
   private solveLeftMiddle1(): BoneState {
     const middleMCP = this.getLeftHandLandmark("middle_mcp")
     const middlePIP = this.getLeftHandLandmark("middle_pip")
-    if (!middleMCP || !middlePIP) return { name: "左中指１", rotation: Quaternion.Identity() }
+    if (!middleMCP || !middlePIP) return { name: "左中指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -859,7 +862,7 @@ export class Solver {
   private solveLeftRing1(): BoneState {
     const ringMCP = this.getLeftHandLandmark("ring_mcp")
     const ringPIP = this.getLeftHandLandmark("ring_pip")
-    if (!ringMCP || !ringPIP) return { name: "左薬指１", rotation: Quaternion.Identity() }
+    if (!ringMCP || !ringPIP) return { name: "左薬指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -900,7 +903,7 @@ export class Solver {
   private solveLeftPinky1(): BoneState {
     const pinkyMCP = this.getLeftHandLandmark("pinky_mcp")
     const pinkyPIP = this.getLeftHandLandmark("pinky_pip")
-    if (!pinkyMCP || !pinkyPIP) return { name: "左小指１", rotation: Quaternion.Identity() }
+    if (!pinkyMCP || !pinkyPIP) return { name: "左小指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const leftArmQuat = this.boneStates["left_arm"].rotation
@@ -942,7 +945,7 @@ export class Solver {
     const thumbMCP = this.getRightHandLandmark("thumb_mcp")
     const thumbIP = this.getRightHandLandmark("thumb_ip")
 
-    if (!thumbMCP || !thumbIP) return { name: "右親指１", rotation: Quaternion.Identity() }
+    if (!thumbMCP || !thumbIP) return { name: "右親指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -979,7 +982,7 @@ export class Solver {
   private solveRightIndex1(): BoneState {
     const indexMCP = this.getRightHandLandmark("index_mcp")
     const indexPIP = this.getRightHandLandmark("index_pip")
-    if (!indexMCP || !indexPIP) return { name: "右人指１", rotation: Quaternion.Identity() }
+    if (!indexMCP || !indexPIP) return { name: "右人指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -1021,7 +1024,7 @@ export class Solver {
   private solveRightMiddle1(): BoneState {
     const middleMCP = this.getRightHandLandmark("middle_mcp")
     const middlePIP = this.getRightHandLandmark("middle_pip")
-    if (!middleMCP || !middlePIP) return { name: "右中指１", rotation: Quaternion.Identity() }
+    if (!middleMCP || !middlePIP) return { name: "右中指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -1062,7 +1065,7 @@ export class Solver {
   private solveRightRing1(): BoneState {
     const ringMCP = this.getRightHandLandmark("ring_mcp")
     const ringPIP = this.getRightHandLandmark("ring_pip")
-    if (!ringMCP || !ringPIP) return { name: "右薬指１", rotation: Quaternion.Identity() }
+    if (!ringMCP || !ringPIP) return { name: "右薬指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -1103,7 +1106,7 @@ export class Solver {
   private solveRightPinky1(): BoneState {
     const pinkyMCP = this.getRightHandLandmark("pinky_mcp")
     const pinkyPIP = this.getRightHandLandmark("pinky_pip")
-    if (!pinkyMCP || !pinkyPIP) return { name: "右小指１", rotation: Quaternion.Identity() }
+    if (!pinkyMCP || !pinkyPIP) return { name: "右小指１", rotation: Quaternion.identity() }
 
     const upperBodyQuat = this.boneStates["upper_body"].rotation
     const rightArmQuat = this.boneStates["right_arm"].rotation
@@ -1242,11 +1245,11 @@ export class VmdWriter {
     const lightFrameCountSize = 4;  // Счетчик освещения
     const shadowFrameCountSize = 4; // Счетчик теней
     const ikFrameCountSize = 4;     // Счетчик IK
-    
-    const totalSize = headerSize + 
-                     (animationData.boneFrames.length * this.FrameSize) +
-                     morphFrameCountSize + cameraFrameCountSize + 
-                     lightFrameCountSize + shadowFrameCountSize + ikFrameCountSize;
+
+    const totalSize = headerSize +
+      (animationData.boneFrames.length * this.FrameSize) +
+      morphFrameCountSize + cameraFrameCountSize +
+      lightFrameCountSize + shadowFrameCountSize + ikFrameCountSize;
 
     const buffer = new ArrayBuffer(totalSize);
     const view = new DataView(buffer);
@@ -1332,7 +1335,7 @@ export class VmdWriter {
   private static getDefaultInterpolation(): Uint8Array {
     // Стандартные интерполяционные кривые для плавной анимации
     const interpolation = new Uint8Array(64);
-    
+
     // Для каждой из 8 кривых (24 байта для перемещения + 32 для вращения + 8 для физики)
     for (let i = 0; i < 8; i++) {
       const start = i * 8;
@@ -1346,7 +1349,7 @@ export class VmdWriter {
         interpolation[start + 5] = 64; // cy
         interpolation[start + 6] = 127; // dx
         interpolation[start + 7] = 127; // dy
-      } 
+      }
       // Плавная интерполяция для вращения (4 кривые)
       else if (i < 7) {
         interpolation[start] = 20;     // ax
@@ -1357,7 +1360,7 @@ export class VmdWriter {
         interpolation[start + 5] = 20;  // cy
         interpolation[start + 6] = 107; // dx
         interpolation[start + 7] = 107; // dy
-      } 
+      }
       // Физика/морфы
       else {
         interpolation[start] = 64;
@@ -1370,7 +1373,7 @@ export class VmdWriter {
         interpolation[start + 7] = 64;
       }
     }
-    
+
     return interpolation;
   }
 
