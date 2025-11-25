@@ -55,7 +55,7 @@ export function ViewerMpl({ isAnimating = true, mplCompiler, mpl_code }: ViewerM
 
     useEffect(() => {
         isMountedRef.current = true
-        void initEngine()
+        initEngine()
 
         return () => {
             isMountedRef.current = false
@@ -127,7 +127,13 @@ export function ViewerMpl({ isAnimating = true, mplCompiler, mpl_code }: ViewerM
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
                 </div>
             )}
-
+            <button onClick={async () => {
+                console.log(engineRef.current);
+                await engineRef.current!.exportToFBX("my_animation.fbx");
+                await engineRef.current!.exportToGLTF("my_animation.gltf");
+            }}>
+                testExport
+            </button>
             {engineError && (
                 <div className="absolute inset-0 flex items-center justify-center">
                     <div className="text-red-500 text-center bg-white p-4 rounded-lg shadow-lg">

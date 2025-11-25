@@ -4,6 +4,7 @@ import { Model } from "./model"
 import { PmxLoader } from "./pmx-loader"
 import { Physics } from "./physics"
 import { VMDKeyFrame, VMDLoader } from "./vmd-loader"
+import { AnimationExporter, downloadBlob, ExportOptions } from "./animation-exporter"
 
 export type EngineOptions = {
   ambient?: number
@@ -2483,5 +2484,67 @@ export class Engine {
 
     const totalGPUMemoryBytes = textureMemoryBytes + bufferMemoryBytes + renderTargetMemoryBytes
     this.stats.gpuMemory = Math.round((totalGPUMemoryBytes / 1024 / 1024) * 100) / 100
+  }
+  async exportToBlender(filename: string = "animation_blender.json",
+    options: ExportOptions = {}) {
+    if (!this.currentModel || this.animationFrames.length === 0) {
+      throw new Error("No model or animation loaded");
+    }
+
+    const blob = await AnimationExporter.exportToBlender(
+      this.currentModel,
+      this.animationFrames,
+      options
+    );
+
+    downloadBlob(blob, filename);
+  }
+  async exportToUnity(
+    filename: string = "animation_unity.json",
+    options: ExportOptions = {}
+  ) {
+    if (!this.currentModel || this.animationFrames.length === 0) {
+      throw new Error("No model or animation loaded");
+    }
+
+    const blob = await AnimationExporter.exportToUnity(
+      this.currentModel,
+      this.animationFrames,
+      options
+    );
+
+    downloadBlob(blob, filename);
+  }
+  async exportToFBX(
+    filename: string = "animation.fbx",
+    options: ExportOptions = {}
+  ) {
+    if (!this.currentModel || this.animationFrames.length === 0) {
+      throw new Error("No model or animation loaded");
+    }
+
+    const blob = await AnimationExporter.exportToFBX(
+      this.currentModel,
+      this.animationFrames,
+      options
+    );
+
+    downloadBlob(blob, filename);
+  }
+  async exportToGLTF(
+    filename: string = "animation.glb",
+    options: ExportOptions = {}
+  ) {
+    if (!this.currentModel || this.animationFrames.length === 0) {
+      throw new Error("No model or animation loaded");
+    }
+
+    const blob = await AnimationExporter.exportToGLB( // Используем GLB вместо GLTF
+      this.currentModel,
+      this.animationFrames,
+      options
+    );
+
+    downloadBlob(blob, filename); // Меняем расширение на .glb
   }
 }
