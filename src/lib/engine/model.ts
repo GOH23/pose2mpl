@@ -67,10 +67,18 @@ interface RotationTweenState {
   durationMs: Float32Array // one float per bone (ms)
 }
 
+// Кэшированные временные объекты для оптимизации
+const TEMP_QUAT1 = new Quat(0, 0, 0, 1)
+const TEMP_QUAT2 = new Quat(0, 0, 0, 1)
+const TEMP_MAT1 = Mat4.identity()
+const TEMP_MAT2 = Mat4.identity()
+const IDENTITY_QUAT = new Quat(0, 0, 0, 1)
+
 export class Model {
-  private vertexData: Float32Array<ArrayBuffer>
+  private textureData: Map<string, ArrayBuffer> = new Map()
+  private vertexData: Float32Array
   private vertexCount: number
-  private indexData: Uint32Array<ArrayBuffer>
+  private indexData: Uint32Array
   private textures: Texture[] = []
   private materials: Material[] = []
   // Static skeleton/skinning (not necessarily serialized yet)
@@ -91,14 +99,15 @@ export class Model {
   private rotTweenState!: RotationTweenState
 
   constructor(
-    vertexData: Float32Array<ArrayBuffer>,
-    indexData: Uint32Array<ArrayBuffer>,
+    vertexData: Float32Array,
+    indexData: Uint32Array,
     textures: Texture[],
     materials: Material[],
     skeleton: Skeleton,
     skinning: Skinning,
     rigidbodies: Rigidbody[] = [],
-    joints: Joint[] = []
+    joints: Joint[] = [],
+    textureData?: Map<string, ArrayBuffer> // Новый параметр
   ) {
     this.vertexData = vertexData
     this.vertexCount = vertexData.length / VERTEX_STRIDE
@@ -113,11 +122,21 @@ export class Model {
     if (this.skeleton.bones.length == 0) {
       throw new Error("Model has no bones")
     }
-
+    if (textureData) {
+      this.textureData = textureData
+    }
     this.initializeRuntimeSkeleton()
     this.initializeRotTweenBuffers()
   }
 
+  getTextureData(): Map<string, ArrayBuffer> {
+    return this.textureData
+  }
+
+  getTextureDataByPath(path: string): ArrayBuffer | undefined {
+    return this.textureData.get(path)
+  }
+  
   private initializeRuntimeSkeleton(): void {
     const boneCount = this.skeleton.bones.length
 
@@ -133,14 +152,12 @@ export class Model {
     }
 
     const rotations = this.runtimeSkeleton.localRotations
-    for (let i = 0; i < this.skeleton.bones.length; i++) {
+    for (let i = 0; i < boneCount; i++) {
       const qi = i * 4
-      if (rotations[qi + 3] === 0) {
-        rotations[qi] = 0
-        rotations[qi + 1] = 0
-        rotations[qi + 2] = 0
-        rotations[qi + 3] = 1
-      }
+      rotations[qi] = 0
+      rotations[qi + 1] = 0
+      rotations[qi + 2] = 0
+      rotations[qi + 3] = 1
     }
   }
 
@@ -165,24 +182,17 @@ export class Model {
       if (state.active[i] !== 1) continue
 
       const startMs = state.startTimeMs[i]
-      const durMs = Math.max(1, state.durationMs[i])
+      const durMs = state.durationMs[i] || 1
       const t = Math.max(0, Math.min(1, (now - startMs) / durMs))
       const e = easeInOut(t)
 
       const qi = i * 4
-      const startQuat = new Quat(
-        state.startQuat[qi],
-        state.startQuat[qi + 1],
-        state.startQuat[qi + 2],
-        state.startQuat[qi + 3]
-      )
-      const targetQuat = new Quat(
-        state.targetQuat[qi],
-        state.targetQuat[qi + 1],
-        state.targetQuat[qi + 2],
-        state.targetQuat[qi + 3]
-      )
-      const result = Quat.slerp(startQuat, targetQuat, e)
+      
+      // Используем кэшированные кватернионы вместо создания новых
+      TEMP_QUAT1.set(state.startQuat[qi], state.startQuat[qi + 1], state.startQuat[qi + 2], state.startQuat[qi + 3])
+      TEMP_QUAT2.set(state.targetQuat[qi], state.targetQuat[qi + 1], state.targetQuat[qi + 2], state.targetQuat[qi + 3])
+      
+      const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, e)
 
       rotations[qi] = result.x
       rotations[qi + 1] = result.y
@@ -195,7 +205,7 @@ export class Model {
 
   // Get interleaved vertex data for GPU upload
   // Format: [x,y,z, nx,ny,nz, u,v, x,y,z, nx,ny,nz, u,v, ...]
-  getVertices(): Float32Array<ArrayBuffer> {
+  getVertices(): Float32Array {
     return this.vertexData
   }
 
@@ -215,7 +225,7 @@ export class Model {
   }
 
   // Get index data for GPU upload
-  getIndices(): Uint32Array<ArrayBuffer> {
+  getIndices(): Uint32Array {
     return this.indexData
   }
 
@@ -245,18 +255,23 @@ export class Model {
 
   rotateBones(names: string[], quats: Quat[], durationMs?: number): void {
     const state = this.rotTweenState
-    const normalized = quats.map((q) => q.normalize())
+    const normalized = quats.map(q => q.normalize())
     const now = performance.now()
     const dur = durationMs && durationMs > 0 ? durationMs : 0
+    const runtime = this.runtimeSkeleton
 
     for (let i = 0; i < names.length; i++) {
       const name = names[i]
-      const idx = this.runtimeSkeleton.nameIndex[name] ?? -1
+      const idx = runtime.nameIndex[name] ?? -1
       if (idx < 0 || idx >= this.skeleton.bones.length) continue
 
       const qi = idx * 4
-      const rotations = this.runtimeSkeleton.localRotations
-      const [tx, ty, tz, tw] = normalized[i].toArray()
+      const rotations = runtime.localRotations
+      const targetQuat = normalized[i]
+      const tx = targetQuat.x
+      const ty = targetQuat.y
+      const tz = targetQuat.z
+      const tw = targetQuat.w
 
       if (dur === 0) {
         rotations[qi] = tx
@@ -274,30 +289,30 @@ export class Model {
 
       if (state.active[idx] === 1) {
         const startMs = state.startTimeMs[idx]
-        const prevDur = Math.max(1, state.durationMs[idx])
+        const prevDur = state.durationMs[idx] || 1
         const t = Math.max(0, Math.min(1, (now - startMs) / prevDur))
-        const e = easeInOut(t)
-        const startQuat = new Quat(
-          state.startQuat[qi],
-          state.startQuat[qi + 1],
-          state.startQuat[qi + 2],
-          state.startQuat[qi + 3]
-        )
-        const targetQuat = new Quat(
-          state.targetQuat[qi],
-          state.targetQuat[qi + 1],
-          state.targetQuat[qi + 2],
-          state.targetQuat[qi + 3]
-        )
-        const result = Quat.slerp(startQuat, targetQuat, e)
-        const cx = result.x
-        const cy = result.y
-        const cz = result.z
-        const cw = result.w
-        sx = cx
-        sy = cy
-        sz = cz
-        sw = cw
+        if (t < 1) {
+          const e = easeInOut(t)
+          
+          TEMP_QUAT1.set(
+            state.startQuat[qi],
+            state.startQuat[qi + 1],
+            state.startQuat[qi + 2],
+            state.startQuat[qi + 3]
+          )
+          TEMP_QUAT2.set(
+            state.targetQuat[qi],
+            state.targetQuat[qi + 1],
+            state.targetQuat[qi + 2],
+            state.targetQuat[qi + 3]
+          )
+          
+          const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, e)
+          sx = result.x
+          sy = result.y
+          sz = result.z
+          sw = result.w
+        }
       }
 
       state.startQuat[qi] = sx
@@ -332,7 +347,8 @@ export class Model {
     const localRot = this.runtimeSkeleton.localRotations
     const localTrans = this.runtimeSkeleton.localTranslations
     const worldBuf = this.runtimeSkeleton.worldMatrices
-    const computed = this.runtimeSkeleton.computedBones.fill(false)
+    const computed = this.runtimeSkeleton.computedBones
+    computed.fill(false)
     const boneCount = bones.length
 
     if (boneCount === 0) return
@@ -341,20 +357,15 @@ export class Model {
       if (computed[i]) return
 
       const b = bones[i]
-      if (b.parentIndex >= boneCount) {
-        console.warn(`[RZM] bone ${i} parent out of range: ${b.parentIndex}`)
-      }
-
       const qi = i * 4
-      let rotateM = Mat4.fromQuat(localRot[qi], localRot[qi + 1], localRot[qi + 2], localRot[qi + 3])
-      let addLocalTx = 0,
-        addLocalTy = 0,
-        addLocalTz = 0
+      const ti = i * 3
 
-      // Optimized append rotation check - only check necessary conditions
+      // Используем кэшированные матрицы вместо создания новых
+      const rotateM = Mat4.fromQuat(localRot[qi], localRot[qi + 1], localRot[qi + 2], localRot[qi + 3])
+      let addLocalTx = 0, addLocalTy = 0, addLocalTz = 0
+
       const appendParentIdx = b.appendParentIndex
-      const hasAppend =
-        b.appendRotate && appendParentIdx !== undefined && appendParentIdx >= 0 && appendParentIdx < boneCount
+      const hasAppend = b.appendRotate && appendParentIdx !== undefined && appendParentIdx >= 0 && appendParentIdx < boneCount
 
       if (hasAppend) {
         const ratio = b.appendRatio === undefined ? 1 : Math.max(-1, Math.min(1, b.appendRatio))
@@ -365,24 +376,17 @@ export class Model {
           const apTi = appendParentIdx * 3
 
           if (b.appendRotate) {
-            let ax = localRot[apQi]
-            let ay = localRot[apQi + 1]
-            let az = localRot[apQi + 2]
+            const ax = localRot[apQi] * (ratio < 0 ? -1 : 1)
+            const ay = localRot[apQi + 1] * (ratio < 0 ? -1 : 1)
+            const az = localRot[apQi + 2] * (ratio < 0 ? -1 : 1)
             const aw = localRot[apQi + 3]
-            const absRatio = ratio < 0 ? -ratio : ratio
-            if (ratio < 0) {
-              ax = -ax
-              ay = -ay
-              az = -az
-            }
-            const identityQuat = new Quat(0, 0, 0, 1)
-            const appendQuat = new Quat(ax, ay, az, aw)
-            const result = Quat.slerp(identityQuat, appendQuat, absRatio)
-            const rx = result.x
-            const ry = result.y
-            const rz = result.z
-            const rw = result.w
-            rotateM = Mat4.fromQuat(rx, ry, rz, rw).multiply(rotateM)
+            const absRatio = Math.abs(ratio)
+            
+            TEMP_QUAT1.set(0, 0, 0, 1) // identity
+            TEMP_QUAT2.set(ax, ay, az, aw)
+            
+            const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, absRatio)
+            rotateM.set(Mat4.fromQuat(result.x, result.y, result.z, result.w).multiply(rotateM))
           }
 
           if (b.appendMove) {
@@ -395,27 +399,27 @@ export class Model {
       }
 
       // Build local matrix: identity + bind translation, then rotation, then append translation
-      this.cachedIdentityMat1
-        .setIdentity()
-        .translateInPlace(b.bindTranslation[0], b.bindTranslation[1], b.bindTranslation[2])
-      this.cachedIdentityMat2.setIdentity().translateInPlace(addLocalTx, addLocalTy, addLocalTz)
-      const localM = this.cachedIdentityMat1.multiply(rotateM).multiply(this.cachedIdentityMat2)
+      TEMP_MAT1.setIdentity().translateInPlace(b.bindTranslation[0], b.bindTranslation[1], b.bindTranslation[2])
+      TEMP_MAT2.setIdentity().translateInPlace(addLocalTx, addLocalTy, addLocalTz)
+      const localM = TEMP_MAT1.multiply(rotateM).multiply(TEMP_MAT2)
 
       const worldOffset = i * 16
       if (b.parentIndex >= 0) {
         const p = b.parentIndex
         if (!computed[p]) computeWorld(p)
         const parentOffset = p * 16
-        // Use cachedIdentityMat2 as temporary buffer for parent * local multiplication
-        Mat4.multiplyArrays(worldBuf, parentOffset, localM.values, 0, this.cachedIdentityMat2.values, 0)
-        worldBuf.subarray(worldOffset, worldOffset + 16).set(this.cachedIdentityMat2.values)
+        
+        // Используем кэшированную матрицу для умножения
+        Mat4.multiplyArrays(worldBuf, parentOffset, localM.values, 0, TEMP_MAT2.values, 0)
+        worldBuf.set(TEMP_MAT2.values, worldOffset)
       } else {
-        worldBuf.subarray(worldOffset, worldOffset + 16).set(localM.values)
+        worldBuf.set(localM.values, worldOffset)
       }
       computed[i] = true
     }
 
-    // Process all bones (recursion handles dependencies automatically)
-    for (let i = 0; i < boneCount; i++) computeWorld(i)
+    for (let i = 0; i < boneCount; i++) {
+      if (!computed[i]) computeWorld(i)
+    }
   }
 }

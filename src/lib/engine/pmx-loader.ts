@@ -23,16 +23,25 @@ export class PmxLoader {
   private rigidbodies: Rigidbody[] = []
   private joints: Joint[] = []
 
-  private constructor(buffer: ArrayBuffer) {
+  public constructor(buffer: ArrayBuffer) {
     this.view = new DataView(buffer)
   }
+  static async loadFromBufferWithTextures(
+    buffer: ArrayBuffer,
+    textureData: Map<string, ArrayBuffer>
+  ): Promise<Model> {
+    const loader = new PmxLoader(buffer)
+    const model = loader.parse()
+      ; (model as any).textureData = textureData
 
+    return model
+  }
   static async load(url: string): Promise<Model> {
     const loader = new PmxLoader(await fetch(url).then((r) => r.arrayBuffer()))
     return loader.parse()
   }
 
-  private parse(): Model {
+  public parse(): Model {
     this.parseHeader()
     const { positions, normals, uvs } = this.parseVertices()
     const indices = this.parseIndices()
@@ -45,7 +54,11 @@ export class PmxLoader {
     this.parseRigidbodies()
     this.parseJoints()
     this.computeInverseBind()
-    return this.toModel(positions, normals, uvs, indices)
+    const model = this.toModel(positions, normals, uvs, indices)
+    if ((this as any).textureData) {
+      ; (model as any).textureData = (this as any).textureData
+    }
+    return model
   }
 
   private parseHeader() {

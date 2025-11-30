@@ -39,7 +39,7 @@ export const Button = ({
   };
 
   // Стили для светлой темы
-  const getLightStyles = () => {
+  const getLightStyles = () => { 
     const base = {
       primary: {
         solid: 'bg-blue-600 hover:bg-blue-700 text-white focus:ring-blue-500',
@@ -51,14 +51,14 @@ export const Button = ({
         solid: 'bg-gray-600 hover:bg-gray-700 text-white focus:ring-gray-500',
         outline: 'border border-gray-600 text-gray-600 hover:bg-gray-50 focus:ring-gray-500',
         ghost: 'text-gray-600 hover:bg-gray-50 focus:ring-gray-500',
-        link: 'text-gray-600 hover:text-gray-700 underline focus:ring-gray-500'
+        link: 'text-gray-600 hover:text-gray-700 underline focus:ring-gray-500' 
       },
-      success: {
+      success: { 
         solid: 'bg-green-600 hover:bg-green-700 text-white focus:ring-green-500',
         outline: 'border border-green-600 text-green-600 hover:bg-green-50 focus:ring-green-500',
         ghost: 'text-green-600 hover:bg-green-50 focus:ring-green-500',
         link: 'text-green-600 hover:text-green-700 underline focus:ring-green-500'
-      },
+      }, 
       warning: {
         solid: 'bg-yellow-500 hover:bg-yellow-600 text-white focus:ring-yellow-500',
         outline: 'border border-yellow-500 text-yellow-600 hover:bg-yellow-50 focus:ring-yellow-500',

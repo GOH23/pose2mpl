@@ -1,9 +1,11 @@
 "use client"
 
 import { useTranslation } from "@/i18n/LocaleProvider"
+import { FolderToRZeng } from "@/lib/engine/rzeng/folder-to-rzeng"
 import { Github, X } from "lucide-react"
 import Link from "next/link"
 import { useState } from "react"
+import { ModelConverter } from "./conv"
 
 export function Header() {
     const [isModalOpen, setIsModalOpen] = useState(false)
@@ -21,13 +23,14 @@ export function Header() {
                             <Link className="" target="_blank" href={"/github"}>
                                 <Github className="text-white size-8 rounded-md shadow p-1 bg-blue-500" />
                             </Link>
-                            <Link className="" target="_blank"  href={"/github"}>
+                            <Link className="" target="_blank" href={"/github"}>
                                 <svg width="32px" height="32px" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="#000000">
                                     <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8.287 5.906c-.778.324-2.334.994-4.666 2.01-.378.15-.577.298-.595.442-.03.243.275.339.69.47l.175.055c.408.133.958.288 1.243.294.26.006.549-.1.868-.32 2.179-1.471 3.304-2.214 3.374-2.23.05-.012.12-.026.166.016.047.041.042.12.037.141-.03.129-1.227 1.241-1.846 1.817-.193.18-.33.307-.358.336a8.154 8.154 0 0 1-.188.186c-.38.366-.664.64.015 1.088.327.216.589.393.85.571.284.194.568.387.936.629.093.06.183.125.27.187.331.236.63.448.997.414.214-.02.435-.22.547-.82.265-1.417.786-4.486.906-5.751a1.426 1.426 0 0 0-.013-.315.337.337 0 0 0-.114-.217.526.526 0 0 0-.31-.093c-.3.005-.763.166-2.984 1.09z" />
                                 </svg>
                             </Link>
                         </div>
                         <div className="ml-auto flex items-center h-full gap-4">
+  
                             <button
                                 onClick={() => setIsModalOpen(true)}
                                 className="text-black cursor-pointer font-bold hover:opacity-80 transition-opacity"
@@ -35,6 +38,7 @@ export function Header() {
                                 Guide
                             </button>
                             <Link className="text-black font-bold cursor-pointer" href={"/gallery"}>Gallery</Link>
+                            <Link className="text-black font-bold cursor-pointer" href={"/engine_view"}>View</Link>
                         </div>
                     </div>
                 </div>

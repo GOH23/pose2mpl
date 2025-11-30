@@ -1,3 +1,4 @@
+
 import { Quat, Vec3, Mat4 } from "./math"
 import { loadAmmo } from "./ammo-loader"
 import type { AmmoInstance } from "@fred3d/ammo"
@@ -22,16 +23,16 @@ export interface Rigidbody {
   collisionMask: number
   shape: RigidbodyShape
   size: Vec3
-  shapePosition: Vec3 // Bind pose world space position from PMX
-  shapeRotation: Vec3 // Bind pose world space rotation (Euler angles) from PMX
+  shapePosition: Vec3
+  shapeRotation: Vec3
   mass: number
   linearDamping: number
   angularDamping: number
   restitution: number
   friction: number
   type: RigidbodyType
-  bodyOffsetMatrixInverse: Mat4 // Inverse of body offset matrix, used to sync rigidbody to bone
-  bodyOffsetMatrix?: Mat4 // Cached non-inverse for performance (computed once during initialization)
+  bodyOffsetMatrixInverse: Mat4
+  bodyOffsetMatrix?: Mat4
 }
 
 export interface Joint {
@@ -41,43 +42,130 @@ export interface Joint {
   rigidbodyIndexA: number
   rigidbodyIndexB: number
   position: Vec3
-  rotation: Vec3 // Euler angles in radians
+  rotation: Vec3
   positionMin: Vec3
   positionMax: Vec3
-  rotationMin: Vec3 // Euler angles in radians
-  rotationMax: Vec3 // Euler angles in radians
+  rotationMin: Vec3
+  rotationMax: Vec3
   springPosition: Vec3
-  springRotation: Vec3 // Spring stiffness values
+  springRotation: Vec3
 }
 
 export class Physics {
   private rigidbodies: Rigidbody[]
   private joints: Joint[]
-  private gravity: Vec3 = new Vec3(0, -98, 0) // Gravity acceleration (cm/s²), MMD-style default
+  private gravity: Vec3 = new Vec3(0, -98, 0)
   private ammoInitialized = false
   private ammoPromise: Promise<AmmoInstance> | null = null
   private ammo: AmmoInstance | null = null
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private dynamicsWorld: any = null // btDiscreteDynamicsWorld
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private ammoRigidbodies: any[] = [] // btRigidBody instances
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private ammoConstraints: any[] = [] // btTypedConstraint instances
-  private rigidbodiesInitialized = false // bodyOffsetMatrixInverse computed and bodies positioned
-  private jointsCreated = false // Joints delayed until after rigidbodies are positioned
-  private firstFrame = true // Needed to reposition bodies before creating joints
-  private forceDisableOffsetForConstraintFrame = true // MMD compatibility (Bullet 2.75 behavior)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private zeroVector: any = null // Cached zero vector for velocity clearing
+  private dynamicsWorld: any = null
+  private ammoRigidbodies: any[] = []
+  private ammoConstraints: any[] = []
+  private rigidbodiesInitialized = false
+  private jointsCreated = false
+  private firstFrame = true
+  private forceDisableOffsetForConstraintFrame = true
+  private zeroVector: any = null
+
+  // Оптимизации
+  private fixedTimeStep: number = 1 / 60
+  private maxSubSteps: number = 1
+  private enabled: boolean = true
+  private lastStepTime: number = 0
+  private problemRigidbodyIndices: Set<number> = new Set()
+  
+  // Дополнительные оптимизации
+  private performanceMode: 'high' | 'balanced' | 'low' = 'balanced'
+  private distanceCulling: boolean = true
+  private cullingDistance: number = 50
+  private cameraPosition: Vec3 = new Vec3(0, 0, 0)
+  private lazyJointCreation: boolean = true
+  private activeRigidbodies: Set<number> = new Set()
+  private frameSkipCounter: number = 0
+  private frameSkipRate: number = 0 // Каждый N-ый кадр пропускаем физику
+  private tempObjects: any[] = [] // Пул временных объектов
+  private boneMatrixCache: Map<number, Mat4> = new Map()
 
   constructor(rigidbodies: Rigidbody[], joints: Joint[] = []) {
     this.rigidbodies = rigidbodies
     this.joints = joints
+    this.detectProblemRigidbodies()
     this.initAmmo()
   }
 
+  // Установка режима производительности
+  setPerformanceMode(mode: 'high' | 'balanced' | 'low'): void {
+    this.performanceMode = mode
+    switch (mode) {
+      case 'high':
+        this.fixedTimeStep = 1 / 60
+        this.maxSubSteps = 3
+        this.frameSkipRate = 0
+        break
+      case 'balanced':
+        this.fixedTimeStep = 1 / 50
+        this.maxSubSteps = 1
+        this.frameSkipRate = 1 // Пропускаем каждый 2ой кадр
+        break
+      case 'low':
+        this.fixedTimeStep = 1 / 30
+        this.maxSubSteps = 1
+        this.frameSkipRate = 2 // Пропускаем каждый 3ий кадр
+        break
+    }
+  }
+
+  // Установка позиции камеры для дистанционного каллинга
+  setCameraPosition(position: Vec3): void {
+    this.cameraPosition = position
+  }
+
+  // Включение/выключение дистанционного каллинга
+  setDistanceCulling(enabled: boolean, distance: number = 50): void {
+    this.distanceCulling = enabled
+    this.cullingDistance = distance
+  }
+
+  private detectProblemRigidbodies(): void {
+    for (let i = 0; i < this.rigidbodies.length; i++) {
+      const rb = this.rigidbodies[i]
+      
+      const isSmall = rb.size.x < 1 && rb.size.y < 1 && rb.size.z < 1
+      const isLight = rb.mass < 0.5
+      const hasJoints = this.joints.some(j => 
+        j.rigidbodyIndexA === i || j.rigidbodyIndexB === i
+      )
+      
+      if ((isSmall && isLight) || hasJoints) {
+        this.problemRigidbodyIndices.add(i)
+      }
+    }
+  }
+
+  markProblemRigidbody(index: number): void {
+    this.problemRigidbodyIndices.add(index)
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled
+  }
+
+  setPhysicsRate(fixedTimeStep: number, maxSubSteps: number): void {
+    this.fixedTimeStep = fixedTimeStep
+    this.maxSubSteps = maxSubSteps
+  }
+
+  // Оптимизация: отложенная загрузка Ammo
   private async initAmmo(): Promise<void> {
     if (this.ammoInitialized || this.ammoPromise) return
+    
+    // Приоритизация загрузки - ждем следующий фрейм если браузер занят
+    if (typeof requestIdleCallback !== 'undefined') {
+      await new Promise(resolve => requestIdleCallback(() => resolve(null)))
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    
     this.ammoPromise = loadAmmo()
     try {
       this.ammo = await this.ammoPromise
@@ -89,13 +177,85 @@ export class Physics {
     }
   }
 
+  // Оптимизация: пул временных объектов
+  private getTempVector(x: number, y: number, z: number): any {
+    if (!this.ammo) return null
+    
+    // Ищем свободный вектор в пуле
+    for (const vec of this.tempObjects) {
+      if (vec.available) {
+        vec.available = false
+        vec.setValue(x, y, z)
+        return vec
+      }
+    }
+    
+    // Создаем новый если нет свободных
+    const newVec = new this.ammo.btVector3(x, y, z)
+    newVec.available = false
+    this.tempObjects.push(newVec)
+    return newVec
+  }
+
+  private returnTempVector(vec: any): void {
+    if (vec) {
+      vec.available = true
+    }
+  }
+
+  // Оптимизация: вычисление расстояния до камеры
+  private isRigidbodyInRange(rbIndex: number): boolean {
+    if (!this.distanceCulling) return true
+    
+    const rb = this.rigidbodies[rbIndex]
+    const ammoBody = this.ammoRigidbodies[rbIndex]
+    if (!ammoBody) return true
+
+    const transform = ammoBody.getWorldTransform()
+    const origin = transform.getOrigin()
+    const position = new Vec3(origin.x(), origin.y(), origin.z())
+    
+    return position.distanceTo(this.cameraPosition) <= this.cullingDistance
+  }
+
+  // Оптимизация: обновление только активных rigidbodies
+  private updateActiveRigidbodies(): void {
+    this.activeRigidbodies.clear()
+    
+    for (let i = 0; i < this.rigidbodies.length; i++) {
+      const rb = this.rigidbodies[i]
+      const ammoBody = this.ammoRigidbodies[i]
+      
+      if (!ammoBody) continue
+      
+      // Статические и кинематические всегда активны если в зоне видимости
+      if (rb.type !== RigidbodyType.Dynamic) {
+        if (this.isRigidbodyInRange(i)) {
+          this.activeRigidbodies.add(i)
+        }
+        continue
+      }
+      
+      // Динамические активны если движутся или в зоне видимости
+      const isMoving = ammoBody.getLinearVelocity().length() > 0.1 || 
+                      ammoBody.getAngularVelocity().length() > 0.1
+      
+      if (isMoving || this.isRigidbodyInRange(i)) {
+        this.activeRigidbodies.add(i)
+        if (!isMoving) {
+          ammoBody.activate(false) // Деактивируем если не движется
+        }
+      }
+    }
+  }
+
   setGravity(gravity: Vec3): void {
     this.gravity = gravity
     if (this.dynamicsWorld && this.ammo) {
       const Ammo = this.ammo
-      const gravityVec = new Ammo.btVector3(gravity.x, gravity.y, gravity.z)
+      const gravityVec = this.getTempVector(gravity.x, gravity.y, gravity.z)
       this.dynamicsWorld.setGravity(gravityVec)
-      Ammo.destroy(gravityVec)
+      this.returnTempVector(gravityVec)
     }
   }
 
@@ -116,41 +276,39 @@ export class Physics {
 
     if (!this.ammo || !this.ammoRigidbodies.length) {
       for (let i = 0; i < this.rigidbodies.length; i++) {
-        transforms.push({
-          position: new Vec3(
-            this.rigidbodies[i].shapePosition.x,
-            this.rigidbodies[i].shapePosition.y,
-            this.rigidbodies[i].shapePosition.z
-          ),
-          rotation: Quat.fromEuler(
-            this.rigidbodies[i].shapeRotation.x,
-            this.rigidbodies[i].shapeRotation.y,
-            this.rigidbodies[i].shapeRotation.z
-          ),
-        })
-      }
-      return transforms
-    }
-
-    for (let i = 0; i < this.ammoRigidbodies.length; i++) {
-      const ammoBody = this.ammoRigidbodies[i]
-      if (!ammoBody) {
         const rb = this.rigidbodies[i]
         transforms.push({
           position: new Vec3(rb.shapePosition.x, rb.shapePosition.y, rb.shapePosition.z),
           rotation: Quat.fromEuler(rb.shapeRotation.x, rb.shapeRotation.y, rb.shapeRotation.z),
         })
-        continue
       }
+      return transforms
+    }
+
+    // Оптимизация: обновляем только активные трансформы
+    for (const i of this.activeRigidbodies) {
+      const ammoBody = this.ammoRigidbodies[i]
+      if (!ammoBody) continue
 
       const transform = ammoBody.getWorldTransform()
       const origin = transform.getOrigin()
       const rotQuat = transform.getRotation()
 
-      transforms.push({
+      transforms[i] = {
         position: new Vec3(origin.x(), origin.y(), origin.z()),
         rotation: new Quat(rotQuat.x(), rotQuat.y(), rotQuat.z(), rotQuat.w()),
-      })
+      }
+    }
+
+    // Заполняем неактивные bind pose
+    for (let i = 0; i < this.rigidbodies.length; i++) {
+      if (!transforms[i]) {
+        const rb = this.rigidbodies[i]
+        transforms[i] = {
+          position: new Vec3(rb.shapePosition.x, rb.shapePosition.y, rb.shapePosition.z),
+          rotation: Quat.fromEuler(rb.shapeRotation.x, rb.shapeRotation.y, rb.shapeRotation.z),
+        }
+      }
     }
 
     return transforms
@@ -173,10 +331,28 @@ export class Physics {
       collisionConfiguration
     )
 
-    const gravityVec = new Ammo.btVector3(this.gravity.x, this.gravity.y, this.gravity.z)
-    this.dynamicsWorld.setGravity(gravityVec)
-    Ammo.destroy(gravityVec)
+    // Оптимизации в зависимости от режима
+    const solverInfo = this.dynamicsWorld.getSolverInfo()
+    switch (this.performanceMode) {
+      case 'high':
+        solverInfo.set_m_numIterations(10)
+        break
+      case 'balanced':
+        solverInfo.set_m_numIterations(6)
+        break
+      case 'low':
+        solverInfo.set_m_numIterations(4)
+        break
+    }
+    
+    solverInfo.set_m_splitImpulse(1)
+    solverInfo.set_m_splitImpulsePenetrationThreshold(-0.02)
 
+    const gravityVec = this.getTempVector(this.gravity.x, this.gravity.y, this.gravity.z)
+    this.dynamicsWorld.setGravity(gravityVec)
+    this.returnTempVector(gravityVec)
+
+    this.zeroVector = this.getTempVector(0, 0, 0)
     this.createAmmoRigidbodies()
   }
 
@@ -188,52 +364,56 @@ export class Physics {
 
     for (let i = 0; i < this.rigidbodies.length; i++) {
       const rb = this.rigidbodies[i]
+      const isProblematic = this.problemRigidbodyIndices.has(i)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let shape: any = null
       const size = rb.size
 
       switch (rb.shape) {
         case RigidbodyShape.Sphere:
-          const radius = size.x
-          shape = new Ammo.btSphereShape(radius)
+          shape = new Ammo.btSphereShape(size.x)
           break
         case RigidbodyShape.Box:
-          const sizeVector = new Ammo.btVector3(size.x, size.y, size.z)
+          const sizeVector = this.getTempVector(size.x, size.y, size.z)
           shape = new Ammo.btBoxShape(sizeVector)
-          Ammo.destroy(sizeVector)
+          this.returnTempVector(sizeVector)
           break
         case RigidbodyShape.Capsule:
-          const capsuleRadius = size.x
-          const capsuleHalfHeight = size.y
-          shape = new Ammo.btCapsuleShape(capsuleRadius, capsuleHalfHeight)
+          shape = new Ammo.btCapsuleShape(size.x, size.y)
           break
         default:
-          const defaultHalfExtents = new Ammo.btVector3(size.x / 2, size.y / 2, size.z / 2)
+          const defaultHalfExtents = this.getTempVector(size.x / 2, size.y / 2, size.z / 2)
           shape = new Ammo.btBoxShape(defaultHalfExtents)
-          Ammo.destroy(defaultHalfExtents)
+          this.returnTempVector(defaultHalfExtents)
           break
       }
 
-      // Bodies must start at correct position to avoid explosions when joints are created
+      if (isProblematic) {
+        shape.setMargin(0.05)
+      }
+
       const transform = new Ammo.btTransform()
       transform.setIdentity()
 
-      const shapePos = new Ammo.btVector3(rb.shapePosition.x, rb.shapePosition.y, rb.shapePosition.z)
+      const shapePos = this.getTempVector(rb.shapePosition.x, rb.shapePosition.y, rb.shapePosition.z)
       transform.setOrigin(shapePos)
-      Ammo.destroy(shapePos)
+      this.returnTempVector(shapePos)
 
       const shapeRotQuat = Quat.fromEuler(rb.shapeRotation.x, rb.shapeRotation.y, rb.shapeRotation.z)
       const quat = new Ammo.btQuaternion(shapeRotQuat.x, shapeRotQuat.y, shapeRotQuat.z, shapeRotQuat.w)
       transform.setRotation(quat)
       Ammo.destroy(quat)
 
-      // All types use the same motionState constructor
       const motionState = new Ammo.btDefaultMotionState(transform)
-      const mass = rb.type === RigidbodyType.Dynamic ? rb.mass : 0
+      
+      let mass = rb.type === RigidbodyType.Dynamic ? rb.mass : 0
+      if (isProblematic && mass > 0) {
+        mass = Math.max(mass, 0.1)
+      }
+      
       const isDynamic = rb.type === RigidbodyType.Dynamic
 
-      const localInertia = new Ammo.btVector3(0, 0, 0)
+      const localInertia = this.getTempVector(0, 0, 0)
       if (isDynamic && mass > 0) {
         shape.calculateLocalInertia(mass, localInertia)
       }
@@ -246,12 +426,20 @@ export class Physics {
 
       const body = new Ammo.btRigidBody(rbInfo)
 
-      body.setSleepingThresholds(0.0, 0.0)
+      if (isProblematic) {
+        body.setSleepingThresholds(0.2, 0.2)
+        body.setDamping(rb.linearDamping * 1.5, rb.angularDamping * 1.5)
+        body.setCcdMotionThreshold(0.5)
+        body.setCcdSweptSphereRadius(0.2)
+      } else {
+        body.setSleepingThresholds(0.1, 0.1)
+        body.setCcdMotionThreshold(0.1)
+        body.setCcdSweptSphereRadius(0.1)
+      }
 
-      // Static (FollowBone) should be kinematic, not static - must follow bones
       if (rb.type === RigidbodyType.Static || rb.type === RigidbodyType.Kinematic) {
-        body.setCollisionFlags(body.getCollisionFlags() | 2) // CF_KINEMATIC_OBJECT
-        body.setActivationState(4) // DISABLE_DEACTIVATION
+        body.setCollisionFlags(body.getCollisionFlags() | 2)
+        body.setActivationState(4)
       }
 
       const collisionGroup = 1 << rb.group
@@ -263,15 +451,15 @@ export class Physics {
         (rb.shape === RigidbodyShape.Capsule && (rb.size.x === 0 || rb.size.y === 0))
 
       if (collisionMask === 0 || isZeroVolume) {
-        body.setCollisionFlags(body.getCollisionFlags() | 4) // CF_NO_CONTACT_RESPONSE
+        body.setCollisionFlags(body.getCollisionFlags() | 4)
       }
 
       this.dynamicsWorld.addRigidBody(body, collisionGroup, collisionMask)
-
       this.ammoRigidbodies.push(body)
+      this.activeRigidbodies.add(i) // Изначально все активны
 
       Ammo.destroy(rbInfo)
-      Ammo.destroy(localInertia)
+      this.returnTempVector(localInertia)
     }
   }
 
@@ -282,16 +470,19 @@ export class Physics {
     this.ammoConstraints = []
 
     for (const joint of this.joints) {
+      // Оптимизация: отложенное создание джойнтов для удаленных объектов
+      if (this.lazyJointCreation) {
+        const isBodyAActive = this.activeRigidbodies.has(joint.rigidbodyIndexA)
+        const isBodyBActive = this.activeRigidbodies.has(joint.rigidbodyIndexB)
+        if (!isBodyAActive && !isBodyBActive) {
+          continue
+        }
+      }
+
       const rbIndexA = joint.rigidbodyIndexA
       const rbIndexB = joint.rigidbodyIndexB
 
-      if (
-        rbIndexA < 0 ||
-        rbIndexA >= this.ammoRigidbodies.length ||
-        rbIndexB < 0 ||
-        rbIndexB >= this.ammoRigidbodies.length
-      ) {
-        console.warn(`[Physics] Invalid joint indices: ${rbIndexA}, ${rbIndexB}`)
+      if (!this.isValidJointIndices(rbIndexA, rbIndexB)) {
         continue
       }
 
@@ -299,55 +490,35 @@ export class Physics {
       const bodyB = this.ammoRigidbodies[rbIndexB]
 
       if (!bodyA || !bodyB) {
-        console.warn(`[Physics] Body not found for joint ${joint.name}: bodyA=${!!bodyA}, bodyB=${!!bodyB}`)
         continue
       }
 
-      // Compute joint frames using actual current body positions (after repositioning)
-      const bodyATransform = bodyA.getWorldTransform()
-      const bodyBTransform = bodyB.getWorldTransform()
+      // Оптимизация: используем кэш для матриц
+      const bodyAMat = this.getCachedBodyMatrix(bodyA)
+      const bodyBMat = this.getCachedBodyMatrix(bodyB)
 
-      const bodyAOrigin = bodyATransform.getOrigin()
-      const bodyARotQuat = bodyATransform.getRotation()
-      const bodyAPos = new Vec3(bodyAOrigin.x(), bodyAOrigin.y(), bodyAOrigin.z())
-      const bodyARot = new Quat(bodyARotQuat.x(), bodyARotQuat.y(), bodyARotQuat.z(), bodyARotQuat.w())
-      const bodyAMat = Mat4.fromPositionRotation(bodyAPos, bodyARot)
-
-      const bodyBOrigin = bodyBTransform.getOrigin()
-      const bodyBRotQuat = bodyBTransform.getRotation()
-      const bodyBPos = new Vec3(bodyBOrigin.x(), bodyBOrigin.y(), bodyBOrigin.z())
-      const bodyBRot = new Quat(bodyBRotQuat.x(), bodyBRotQuat.y(), bodyBRotQuat.z(), bodyBRotQuat.w())
-      const bodyBMat = Mat4.fromPositionRotation(bodyBPos, bodyBRot)
-
-      const scalingFactor = 1.0
       const jointRotQuat = Quat.fromEuler(joint.rotation.x, joint.rotation.y, joint.rotation.z)
-      const jointPos = new Vec3(
-        joint.position.x * scalingFactor,
-        joint.position.y * scalingFactor,
-        joint.position.z * scalingFactor
-      )
+      const jointPos = new Vec3(joint.position.x, joint.position.y, joint.position.z)
       const jointTransform = Mat4.fromPositionRotation(jointPos, jointRotQuat)
 
-      // Transform joint world position to body A's local space
       const frameInAMat = bodyAMat.inverse().multiply(jointTransform)
       const framePosA = frameInAMat.getPosition()
       const frameRotA = frameInAMat.toQuat()
 
-      // Transform joint world position to body B's local space
       const frameInBMat = bodyBMat.inverse().multiply(jointTransform)
       const framePosB = frameInBMat.getPosition()
       const frameRotB = frameInBMat.toQuat()
 
       const frameInA = new Ammo.btTransform()
       frameInA.setIdentity()
-      const pivotInA = new Ammo.btVector3(framePosA.x, framePosA.y, framePosA.z)
+      const pivotInA = this.getTempVector(framePosA.x, framePosA.y, framePosA.z)
       frameInA.setOrigin(pivotInA)
       const quatA = new Ammo.btQuaternion(frameRotA.x, frameRotA.y, frameRotA.z, frameRotA.w)
       frameInA.setRotation(quatA)
 
       const frameInB = new Ammo.btTransform()
       frameInB.setIdentity()
-      const pivotInB = new Ammo.btVector3(framePosB.x, framePosB.y, framePosB.z)
+      const pivotInB = this.getTempVector(framePosB.x, framePosB.y, framePosB.z)
       frameInB.setOrigin(pivotInB)
       const quatB = new Ammo.btQuaternion(frameRotB.x, frameRotB.y, frameRotB.z, frameRotB.w)
       frameInB.setRotation(quatB)
@@ -361,7 +532,6 @@ export class Physics {
         useLinearReferenceFrameA
       )
 
-      // Disable offset for constraint frame for MMD compatibility (Bullet 2.75 behavior)
       if (this.forceDisableOffsetForConstraintFrame) {
         let jointPtr: number | undefined
         if (typeof Ammo.getPointer === "function") {
@@ -373,7 +543,6 @@ export class Physics {
 
         if (jointPtr !== undefined && Ammo.HEAP8) {
           const heap8 = Ammo.HEAP8 as Uint8Array
-          // jointPtr + 1300 = m_useLinearReferenceFrameA, jointPtr + 1301 = m_useOffsetForConstraintFrame
           if (heap8[jointPtr + 1300] === (useLinearReferenceFrameA ? 1 : 0) && heap8[jointPtr + 1301] === 1) {
             heap8[jointPtr + 1301] = 0
           }
@@ -381,20 +550,20 @@ export class Physics {
       }
 
       for (let i = 0; i < 6; ++i) {
-        constraint.setParam(2, 0.475, i) // BT_CONSTRAINT_STOP_ERP
+        constraint.setParam(2, 0.475, i)
       }
 
-      const lowerLinear = new Ammo.btVector3(joint.positionMin.x, joint.positionMin.y, joint.positionMin.z)
-      const upperLinear = new Ammo.btVector3(joint.positionMax.x, joint.positionMax.y, joint.positionMax.z)
+      const lowerLinear = this.getTempVector(joint.positionMin.x, joint.positionMin.y, joint.positionMin.z)
+      const upperLinear = this.getTempVector(joint.positionMax.x, joint.positionMax.y, joint.positionMax.z)
       constraint.setLinearLowerLimit(lowerLinear)
       constraint.setLinearUpperLimit(upperLinear)
 
-      const lowerAngular = new Ammo.btVector3(
+      const lowerAngular = this.getTempVector(
         this.normalizeAngle(joint.rotationMin.x),
         this.normalizeAngle(joint.rotationMin.y),
         this.normalizeAngle(joint.rotationMin.z)
       )
-      const upperAngular = new Ammo.btVector3(
+      const upperAngular = this.getTempVector(
         this.normalizeAngle(joint.rotationMax.x),
         this.normalizeAngle(joint.rotationMax.y),
         this.normalizeAngle(joint.rotationMax.z)
@@ -402,27 +571,19 @@ export class Physics {
       constraint.setAngularLowerLimit(lowerAngular)
       constraint.setAngularUpperLimit(upperAngular)
 
-      // Linear springs: only enable if stiffness is non-zero
       if (joint.springPosition.x !== 0) {
         constraint.setStiffness(0, joint.springPosition.x)
         constraint.enableSpring(0, true)
-      } else {
-        constraint.enableSpring(0, false)
       }
       if (joint.springPosition.y !== 0) {
         constraint.setStiffness(1, joint.springPosition.y)
         constraint.enableSpring(1, true)
-      } else {
-        constraint.enableSpring(1, false)
       }
       if (joint.springPosition.z !== 0) {
         constraint.setStiffness(2, joint.springPosition.z)
         constraint.enableSpring(2, true)
-      } else {
-        constraint.enableSpring(2, false)
       }
 
-      // Angular springs: always enable
       constraint.setStiffness(3, joint.springRotation.x)
       constraint.enableSpring(3, true)
       constraint.setStiffness(4, joint.springRotation.y)
@@ -431,35 +592,47 @@ export class Physics {
       constraint.enableSpring(5, true)
 
       this.dynamicsWorld.addConstraint(constraint, false)
-
       this.ammoConstraints.push(constraint)
-      Ammo.destroy(pivotInA)
-      Ammo.destroy(pivotInB)
+
+      this.returnTempVector(pivotInA)
+      this.returnTempVector(pivotInB)
       Ammo.destroy(quatA)
       Ammo.destroy(quatB)
-      Ammo.destroy(lowerLinear)
-      Ammo.destroy(upperLinear)
-      Ammo.destroy(lowerAngular)
-      Ammo.destroy(upperAngular)
+      this.returnTempVector(lowerLinear)
+      this.returnTempVector(upperLinear)
+      this.returnTempVector(lowerAngular)
+      this.returnTempVector(upperAngular)
     }
   }
 
-  // Normalize angle to [-π, π] range
+  private getCachedBodyMatrix(body: any): Mat4 {
+    const transform = body.getWorldTransform()
+    const origin = transform.getOrigin()
+    const rotation = transform.getRotation()
+    
+    const pos = new Vec3(origin.x(), origin.y(), origin.z())
+    const rot = new Quat(rotation.x(), rotation.y(), rotation.z(), rotation.w())
+    
+    return Mat4.fromPositionRotation(pos, rot)
+  }
+
+  private isValidJointIndices(indexA: number, indexB: number): boolean {
+    return indexA >= 0 && indexA < this.ammoRigidbodies.length &&
+           indexB >= 0 && indexB < this.ammoRigidbodies.length
+  }
+
   private normalizeAngle(angle: number): number {
     const pi = Math.PI
     const twoPi = 2 * pi
-    angle = angle % twoPi
-    if (angle < -pi) {
-      angle += twoPi
-    } else if (angle > pi) {
-      angle -= twoPi
+    let normalized = angle % twoPi
+    if (normalized < -pi) {
+      normalized += twoPi
+    } else if (normalized > pi) {
+      normalized -= twoPi
     }
-    return angle
+    return normalized
   }
 
-  // Reset physics state (reposition bodies, clear velocities)
-  // Following babylon-mmd pattern: initialize all rigid body positions from current bone poses
-  // Call this when starting a new animation to prevent physics instability from sudden pose changes
   reset(boneWorldMatrices: Float32Array, boneInverseBindMatrices: Float32Array): void {
     if (!this.ammoInitialized || !this.ammo || !this.dynamicsWorld) {
       return
@@ -468,14 +641,11 @@ export class Physics {
     const boneCount = boneWorldMatrices.length / 16
     const Ammo = this.ammo
 
-    // Ensure body offsets are computed
     if (!this.rigidbodiesInitialized) {
       this.computeBodyOffsets(boneInverseBindMatrices, boneCount)
       this.rigidbodiesInitialized = true
     }
 
-    // Reposition ALL rigid bodies from current bone poses (like babylon-mmd initialize)
-    // This ensures all bodies are correctly positioned before physics starts
     for (let i = 0; i < this.rigidbodies.length; i++) {
       const rb = this.rigidbodies[i]
       const ammoBody = this.ammoRigidbodies[i]
@@ -484,20 +654,21 @@ export class Physics {
       const boneIdx = rb.boneIndex
       const worldMatIdx = boneIdx * 16
 
-      // Get bone world matrix
-      const boneWorldMat = new Mat4(boneWorldMatrices.subarray(worldMatIdx, worldMatIdx + 16))
+      // Используем кэш для bone матриц
+      let boneWorldMat = this.boneMatrixCache.get(boneIdx)
+      if (!boneWorldMat) {
+        boneWorldMat = new Mat4(boneWorldMatrices.subarray(worldMatIdx, worldMatIdx + 16))
+        this.boneMatrixCache.set(boneIdx, boneWorldMat)
+      }
 
-      // Compute body world matrix: bodyWorld = boneWorld × bodyOffsetMatrix
-      // (like babylon-mmd: bodyWorldMatrix = bodyOffsetMatrix.multiplyToRef(bodyWorldMatrix))
-      const bodyOffsetMatrix = rb.bodyOffsetMatrix || rb.bodyOffsetMatrixInverse.inverse()
+      const bodyOffsetMatrix = rb.bodyOffsetMatrix!
       const bodyWorldMatrix = boneWorldMat.multiply(bodyOffsetMatrix)
 
       const worldPos = bodyWorldMatrix.getPosition()
       const worldRot = bodyWorldMatrix.toQuat()
 
-      // Set transform matrix
       const transform = new Ammo.btTransform()
-      const pos = new Ammo.btVector3(worldPos.x, worldPos.y, worldPos.z)
+      const pos = this.getTempVector(worldPos.x, worldPos.y, worldPos.z)
       const quat = new Ammo.btQuaternion(worldRot.x, worldRot.y, worldRot.z, worldRot.w)
 
       transform.setOrigin(pos)
@@ -506,35 +677,38 @@ export class Physics {
       ammoBody.setWorldTransform(transform)
       ammoBody.getMotionState().setWorldTransform(transform)
 
-      // Clear velocities for all rigidbodies
-      if (!this.zeroVector) {
-        this.zeroVector = new Ammo.btVector3(0, 0, 0)
-      }
       ammoBody.setLinearVelocity(this.zeroVector)
       ammoBody.setAngularVelocity(this.zeroVector)
 
-      // Explicitly activate dynamic rigidbodies after reset (wake them up)
-      // This is critical for dress pieces and other dynamic bodies to prevent teleporting
       if (rb.type === RigidbodyType.Dynamic) {
-        ammoBody.activate(true) // Wake up the body
+        ammoBody.activate(true)
       }
 
-      Ammo.destroy(pos)
+      this.returnTempVector(pos)
       Ammo.destroy(quat)
     }
 
-    // Step simulation once to stabilize (like babylon-mmd)
     if (this.dynamicsWorld.stepSimulation) {
       this.dynamicsWorld.stepSimulation(0, 0, 0)
     }
+
+    // Сбрасываем активные rigidbodies
+    this.updateActiveRigidbodies()
   }
 
-  // Syncs bones to rigidbodies, simulates dynamics, solves constraints
-  // Modifies boneWorldMatrices in-place for dynamic rigidbodies that drive bones
   step(dt: number, boneWorldMatrices: Float32Array, boneInverseBindMatrices: Float32Array): void {
-    // Wait for Ammo to initialize
-    if (!this.ammoInitialized || !this.ammo || !this.dynamicsWorld) {
+    if (!this.enabled || !this.ammoInitialized || !this.ammo || !this.dynamicsWorld) {
       return
+    }
+
+    // Оптимизация: пропуск кадров
+    if (this.frameSkipRate > 0) {
+      this.frameSkipCounter++
+      if (this.frameSkipCounter > this.frameSkipRate) {
+        this.frameSkipCounter = 0
+      } else if (this.frameSkipCounter > 0) {
+        return // Пропускаем этот кадр
+      }
     }
 
     const boneCount = boneWorldMatrices.length / 16
@@ -545,7 +719,6 @@ export class Physics {
         this.rigidbodiesInitialized = true
       }
 
-      // Position bodies based on current bone poses (not bind pose) before creating joints
       this.positionBodiesFromBones(boneWorldMatrices, boneCount)
 
       if (!this.jointsCreated) {
@@ -558,20 +731,26 @@ export class Physics {
       }
 
       this.firstFrame = false
+      this.lastStepTime = performance.now()
+      
+      // Инициализируем активные rigidbodies
+      this.updateActiveRigidbodies()
+      return
     }
 
-    // Step order: 1) Sync Static/Kinematic from bones, 2) Step physics, 3) Apply dynamic to bones
+    const currentTime = performance.now()
+    const deltaTime = Math.min((currentTime - this.lastStepTime) / 1000, 0.1)
+    this.lastStepTime = currentTime
+
+    // Обновляем активные rigidbodies
+    this.updateActiveRigidbodies()
+
     this.syncFromBones(boneWorldMatrices, boneInverseBindMatrices, boneCount)
-
-    this.stepAmmoPhysics(dt)
-
+    this.stepAmmoPhysics(deltaTime)
     this.applyAmmoRigidbodiesToBones(boneWorldMatrices, boneInverseBindMatrices, boneCount)
   }
 
-  // Compute bodyOffsetMatrixInverse for all rigidbodies (called once during initialization)
   private computeBodyOffsets(boneInverseBindMatrices: Float32Array, boneCount: number): void {
-    if (!this.ammo || !this.dynamicsWorld) return
-
     for (let i = 0; i < this.rigidbodies.length; i++) {
       const rb = this.rigidbodies[i]
       if (rb.boneIndex >= 0 && rb.boneIndex < boneCount) {
@@ -580,24 +759,21 @@ export class Physics {
 
         const invBindMat = new Mat4(boneInverseBindMatrices.subarray(invBindIdx, invBindIdx + 16))
 
-        // Compute shape transform in bone-local space: shapeLocal = boneInverseBind × shapeWorldBind
         const shapeRotQuat = Quat.fromEuler(rb.shapeRotation.x, rb.shapeRotation.y, rb.shapeRotation.z)
         const shapeWorldBind = Mat4.fromPositionRotation(rb.shapePosition, shapeRotQuat)
 
-        // shapeLocal = boneInverseBind × shapeWorldBind (not shapeWorldBind × boneInverseBind)
         const bodyOffsetMatrix = invBindMat.multiply(shapeWorldBind)
         rb.bodyOffsetMatrixInverse = bodyOffsetMatrix.inverse()
-        rb.bodyOffsetMatrix = bodyOffsetMatrix // Cache non-inverse to avoid expensive inverse() calls
+        rb.bodyOffsetMatrix = bodyOffsetMatrix
       } else {
         rb.bodyOffsetMatrixInverse = Mat4.identity()
-        rb.bodyOffsetMatrix = Mat4.identity() // Cache non-inverse
+        rb.bodyOffsetMatrix = Mat4.identity()
       }
     }
   }
 
-  // Position bodies based on current bone transforms (called on first frame only)
   private positionBodiesFromBones(boneWorldMatrices: Float32Array, boneCount: number): void {
-    if (!this.ammo || !this.dynamicsWorld) return
+    if (!this.ammo) return
 
     const Ammo = this.ammo
 
@@ -611,75 +787,63 @@ export class Physics {
 
       const boneWorldMat = new Mat4(boneWorldMatrices.subarray(worldMatIdx, worldMatIdx + 16))
 
-      // nodeWorld = boneWorld × shapeLocal (not shapeLocal × boneWorld)
-      const bodyOffsetMatrix = rb.bodyOffsetMatrix || rb.bodyOffsetMatrixInverse.inverse()
+      const bodyOffsetMatrix = rb.bodyOffsetMatrix!
       const nodeWorldMatrix = boneWorldMat.multiply(bodyOffsetMatrix)
 
       const worldPos = nodeWorldMatrix.getPosition()
       const worldRot = nodeWorldMatrix.toQuat()
 
       const transform = new Ammo.btTransform()
-      const pos = new Ammo.btVector3(worldPos.x, worldPos.y, worldPos.z)
+      const pos = this.getTempVector(worldPos.x, worldPos.y, worldPos.z)
       const quat = new Ammo.btQuaternion(worldRot.x, worldRot.y, worldRot.z, worldRot.w)
 
       transform.setOrigin(pos)
       transform.setRotation(quat)
 
       if (rb.type === RigidbodyType.Static || rb.type === RigidbodyType.Kinematic) {
-        ammoBody.setCollisionFlags(ammoBody.getCollisionFlags() | 2) // CF_KINEMATIC_OBJECT
-        ammoBody.setActivationState(4) // DISABLE_DEACTIVATION
+        ammoBody.setCollisionFlags(ammoBody.getCollisionFlags() | 2)
+        ammoBody.setActivationState(4)
       }
 
       ammoBody.setWorldTransform(transform)
       ammoBody.getMotionState().setWorldTransform(transform)
 
-      if (!this.zeroVector) {
-        this.zeroVector = new Ammo.btVector3(0, 0, 0)
-      }
       ammoBody.setLinearVelocity(this.zeroVector)
       ammoBody.setAngularVelocity(this.zeroVector)
 
-      Ammo.destroy(pos)
+      this.returnTempVector(pos)
       Ammo.destroy(quat)
-      Ammo.destroy(transform)
     }
   }
 
-  // Sync Static (FollowBone) and Kinematic rigidbodies to follow bone transforms
-  private syncFromBones(
-    boneWorldMatrices: Float32Array,
-    boneInverseBindMatrices: Float32Array,
-    boneCount: number
-  ): void {
-    if (!this.ammo || !this.dynamicsWorld) return
+  private syncFromBones(boneWorldMatrices: Float32Array, boneInverseBindMatrices: Float32Array, boneCount: number): void {
+    if (!this.ammo) return
 
     const Ammo = this.ammo
 
-    for (let i = 0; i < this.rigidbodies.length; i++) {
+    // Оптимизация: синхронизируем только активные тела
+    for (const i of this.activeRigidbodies) {
       const rb = this.rigidbodies[i]
       const ammoBody = this.ammoRigidbodies[i]
       if (!ammoBody) continue
 
-      // Sync both Static (FollowBone) and Kinematic bodies - they both follow bones
       if (
         (rb.type === RigidbodyType.Static || rb.type === RigidbodyType.Kinematic) &&
-        rb.boneIndex >= 0 &&
-        rb.boneIndex < boneCount
+        rb.boneIndex >= 0 && rb.boneIndex < boneCount
       ) {
         const boneIdx = rb.boneIndex
         const worldMatIdx = boneIdx * 16
 
         const boneWorldMat = new Mat4(boneWorldMatrices.subarray(worldMatIdx, worldMatIdx + 16))
 
-        // nodeWorld = boneWorld × shapeLocal (not shapeLocal × boneWorld)
-        const bodyOffsetMatrix = rb.bodyOffsetMatrix || rb.bodyOffsetMatrixInverse.inverse()
+        const bodyOffsetMatrix = rb.bodyOffsetMatrix!
         const nodeWorldMatrix = boneWorldMat.multiply(bodyOffsetMatrix)
 
         const worldPos = nodeWorldMatrix.getPosition()
         const worldRot = nodeWorldMatrix.toQuat()
 
         const transform = new Ammo.btTransform()
-        const pos = new Ammo.btVector3(worldPos.x, worldPos.y, worldPos.z)
+        const pos = this.getTempVector(worldPos.x, worldPos.y, worldPos.z)
         const quat = new Ammo.btQuaternion(worldRot.x, worldRot.y, worldRot.z, worldRot.w)
 
         transform.setOrigin(pos)
@@ -688,43 +852,30 @@ export class Physics {
         ammoBody.setWorldTransform(transform)
         ammoBody.getMotionState().setWorldTransform(transform)
 
-        if (!this.zeroVector) {
-          this.zeroVector = new Ammo.btVector3(0, 0, 0)
-        }
         ammoBody.setLinearVelocity(this.zeroVector)
         ammoBody.setAngularVelocity(this.zeroVector)
 
-        Ammo.destroy(pos)
+        this.returnTempVector(pos)
         Ammo.destroy(quat)
-        Ammo.destroy(transform)
       }
     }
   }
 
-  // Step Ammo physics simulation
   private stepAmmoPhysics(dt: number): void {
     if (!this.ammo || !this.dynamicsWorld) return
 
-    const fixedTimeStep = 1 / 75
-    const maxSubSteps = 10
-
-    this.dynamicsWorld.stepSimulation(dt, maxSubSteps, fixedTimeStep)
+    this.dynamicsWorld.stepSimulation(dt, this.maxSubSteps, this.fixedTimeStep)
   }
 
-  // Apply dynamic rigidbody world transforms to bone world matrices in-place
-  private applyAmmoRigidbodiesToBones(
-    boneWorldMatrices: Float32Array,
-    boneInverseBindMatrices: Float32Array,
-    boneCount: number
-  ): void {
-    if (!this.ammo || !this.dynamicsWorld) return
+  private applyAmmoRigidbodiesToBones(boneWorldMatrices: Float32Array, boneInverseBindMatrices: Float32Array, boneCount: number): void {
+    if (!this.ammo) return
 
-    for (let i = 0; i < this.rigidbodies.length; i++) {
+    // Оптимизация: применяем только активные динамические тела
+    for (const i of this.activeRigidbodies) {
       const rb = this.rigidbodies[i]
       const ammoBody = this.ammoRigidbodies[i]
       if (!ammoBody) continue
 
-      // Only dynamic rigidbodies drive bones (Static/Kinematic follow bones)
       if (rb.type === RigidbodyType.Dynamic && rb.boneIndex >= 0 && rb.boneIndex < boneCount) {
         const boneIdx = rb.boneIndex
         const worldMatIdx = boneIdx * 16
@@ -737,16 +888,32 @@ export class Physics {
         const nodeRot = new Quat(rotation.x(), rotation.y(), rotation.z(), rotation.w())
         const nodeWorldMatrix = Mat4.fromPositionRotation(nodePos, nodeRot)
 
-        // boneWorld = nodeWorld × bodyOffsetMatrixInverse (not bodyOffsetMatrixInverse × nodeWorld)
         const boneWorldMat = nodeWorldMatrix.multiply(rb.bodyOffsetMatrixInverse)
 
         const values = boneWorldMat.values
         if (!isNaN(values[0]) && !isNaN(values[15]) && Math.abs(values[0]) < 1e6 && Math.abs(values[15]) < 1e6) {
           boneWorldMatrices.set(values, worldMatIdx)
-        } else {
-          console.warn(`[Physics] Invalid bone world matrix for rigidbody ${i} (${rb.name}), skipping update`)
         }
       }
     }
+  }
+
+  // Очистка ресурсов
+  destroy(): void {
+    if (this.ammo) {
+      // Очищаем пул временных объектов
+      for (const obj of this.tempObjects) {
+        this.ammo.destroy(obj)
+      }
+      this.tempObjects = []
+      
+      if (this.zeroVector) {
+        this.ammo.destroy(this.zeroVector)
+        this.zeroVector = null
+      }
+    }
+    this.boneMatrixCache.clear()
+    this.activeRigidbodies.clear()
+    this.problemRigidbodyIndices.clear()
   }
 }

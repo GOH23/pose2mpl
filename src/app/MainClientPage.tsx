@@ -29,10 +29,10 @@ export function MainClientPage() {
   const [holisticLandmarker, setHolisticLandmarker] = useState<HolisticLandmarker | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   useEffect(() => {
-    ai_model.current = new modelMLCAi();
-    ai_model.current.init().then(() => {
-      console.log("Init engine")
-    })
+    // ai_model.current = new modelMLCAi();
+    // ai_model.current.init().then(() => {
+    //   console.log("Init engine")
+    // })
   }, [])
   // Инициализация MediaPipe Holistic
   useEffect(() => {

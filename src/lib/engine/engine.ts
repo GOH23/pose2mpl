@@ -1,15 +1,26 @@
+//v0.2.10
 import { Camera } from "./camera"
 import { Quat, Vec3 } from "./math"
-import { Model } from "./model"
+import { Material, Model, Texture } from "./model"
 import { PmxLoader } from "./pmx-loader"
 import { Physics } from "./physics"
 import { VMDKeyFrame, VMDLoader } from "./vmd-loader"
 import { AnimationExporter, downloadBlob, ExportOptions } from "./animation-exporter"
-
+//code wgsl
+import outlineShaderCode from "./shaders/outlineShaderCode.wgsl"
+import shaderCode from "./shaders/shaderCode.wgsl"
+import bloomExtractShaderCode from './shaders/bloomExtractShaderCode.wgsl'
+import computeShaderCode from "./shaders/computeShaderCode.wgsl"
+import depthOnlyShaderCode from "./shaders/depthOnlyShader.wgsl"
+import bloomBlurShaderCode from "./shaders/bloomBlurShaderCode.wgsl"
+import bloomComposeShaderCode from "./shaders/bloomComposeShaderCode.wgsl"
+import { RZengLoader } from "./rzeng/rzeng-loader"
 export type EngineOptions = {
   ambient?: number
   bloomIntensity?: number
   rimLightIntensity?: number
+  cameraDistance?: number
+  cameraTarget?: Vec3
 }
 
 export interface EngineStats {
@@ -17,7 +28,12 @@ export interface EngineStats {
   frameTime: number // ms
   gpuMemory: number // MB (estimated total GPU memory)
 }
-
+interface DrawCall {
+  count: number
+  firstIndex: number
+  bindGroup: GPUBindGroup
+  isTransparent: boolean
+}
 // Internal type for organizing bone keyframes during animation playback
 type BoneKeyFrame = {
   boneName: string
@@ -26,6 +42,8 @@ type BoneKeyFrame = {
 }
 
 export class Engine {
+  ///
+  ///
   private canvas: HTMLCanvasElement
   private device!: GPUDevice
   private context!: GPUCanvasContext
@@ -33,6 +51,8 @@ export class Engine {
   private camera!: Camera
   private cameraUniformBuffer!: GPUBuffer
   private cameraMatrixData = new Float32Array(36)
+  private cameraDistance: number = 26.6
+  private cameraTarget: Vec3 = new Vec3(0, 12.5, 0)
   private lightUniformBuffer!: GPUBuffer
   private lightData = new Float32Array(64)
   private lightCount = 0
@@ -40,14 +60,16 @@ export class Engine {
   private indexBuffer?: GPUBuffer
   private resizeObserver: ResizeObserver | null = null
   private depthTexture!: GPUTexture
-  private pipeline!: GPURenderPipeline
-  private outlinePipeline!: GPURenderPipeline
-  private hairUnifiedOutlinePipeline!: GPURenderPipeline
-  private hairUnifiedPipelineOverEyes!: GPURenderPipeline
-  private hairUnifiedPipelineOverNonEyes!: GPURenderPipeline
-  private hairDepthPipeline!: GPURenderPipeline
+  // Material rendering pipelines
+  private modelPipeline!: GPURenderPipeline
   private eyePipeline!: GPURenderPipeline
-  private hairBindGroupLayout!: GPUBindGroupLayout
+  private hairPipelineOverEyes!: GPURenderPipeline
+  private hairPipelineOverNonEyes!: GPURenderPipeline
+  private hairDepthPipeline!: GPURenderPipeline
+  // Outline pipelines
+  private outlinePipeline!: GPURenderPipeline
+  private hairOutlinePipeline!: GPURenderPipeline
+  private mainBindGroupLayout!: GPUBindGroupLayout
   private outlineBindGroupLayout!: GPUBindGroupLayout
   private jointsBuffer!: GPUBuffer
   private weightsBuffer!: GPUBuffer
@@ -58,8 +80,12 @@ export class Engine {
   private skinMatrixComputeBindGroup?: GPUBindGroup
   private boneCountBuffer?: GPUBuffer
   private multisampleTexture!: GPUTexture
-  private readonly sampleCount = 4 // MSAA 4x
+  private readonly sampleCount = 4
   private renderPassDescriptor!: GPURenderPassDescriptor
+  // Constants
+  private readonly STENCIL_EYE_VALUE = 1
+  private readonly COMPUTE_WORKGROUP_SIZE = 64
+  private readonly BLOOM_DOWNSCALE_FACTOR = 2
   // Ambient light settings
   private ambient: number = 1.0
   // Bloom post-processing textures
@@ -68,7 +94,7 @@ export class Engine {
   private bloomExtractTexture!: GPUTexture
   private bloomBlurTexture1!: GPUTexture
   private bloomBlurTexture2!: GPUTexture
-  // Bloom post-processing pipelines
+  // Post-processing pipelines
   private bloomExtractPipeline!: GPURenderPipeline
   private bloomBlurPipeline!: GPURenderPipeline
   private bloomComposePipeline!: GPURenderPipeline
@@ -88,14 +114,22 @@ export class Engine {
   private bloomIntensity: number = 0.12
   // Rim light settings
   private rimLightIntensity: number = 0.45
-  private rimLightPower: number = 2.0
 
   private currentModel: Model | null = null
   private modelDir: string = ""
   private physics: Physics | null = null
-  private textureSampler!: GPUSampler
+  private materialSampler!: GPUSampler
   private textureCache = new Map<string, GPUTexture>()
-  private textureSizes = new Map<string, { width: number; height: number }>()
+  // Draw lists
+  private opaqueDraws: DrawCall[] = []
+  private eyeDraws: DrawCall[] = []
+  private hairDrawsOverEyes: DrawCall[] = []
+  private hairDrawsOverNonEyes: DrawCall[] = []
+  private transparentDraws: DrawCall[] = []
+  private opaqueOutlineDraws: DrawCall[] = []
+  private eyeOutlineDraws: DrawCall[] = []
+  private hairOutlineDraws: DrawCall[] = []
+  private transparentOutlineDraws: DrawCall[] = []
 
   private lastFpsUpdate = performance.now()
   private framesSinceLastUpdate = 0
@@ -113,6 +147,9 @@ export class Engine {
 
   private animationFrames: VMDKeyFrame[] = []
   private animationTimeouts: number[] = []
+  private gpuMemoryMB: number = 0
+
+
 
   constructor(canvas: HTMLCanvasElement, options?: EngineOptions) {
     this.canvas = canvas
@@ -120,6 +157,8 @@ export class Engine {
       this.ambient = options.ambient ?? 1.0
       this.bloomIntensity = options.bloomIntensity ?? 0.12
       this.rimLightIntensity = options.rimLightIntensity ?? 0.45
+      this.cameraDistance = options.cameraDistance ?? 26.6
+      this.cameraTarget = options.cameraTarget ?? new Vec3(0, 12.5, 0)
     }
   }
 
@@ -154,9 +193,8 @@ export class Engine {
     this.setupResize()
   }
 
-  // Step 2: Create shaders and render pipelines
   private createPipelines() {
-    this.textureSampler = this.device.createSampler({
+    this.materialSampler = this.device.createSampler({
       magFilter: "linear",
       minFilter: "linear",
       addressModeU: "repeat",
@@ -165,131 +203,12 @@ export class Engine {
 
     const shaderModule = this.device.createShaderModule({
       label: "model shaders",
-      code: /* wgsl */ `
-        struct CameraUniforms {
-          view: mat4x4f,
-          projection: mat4x4f,
-          viewPos: vec3f,
-          _padding: f32,
-        };
-
-        struct Light {
-          direction: vec3f,
-          _padding1: f32,
-          color: vec3f,
-          intensity: f32,
-        };
-
-        struct LightUniforms {
-          ambient: f32,
-          lightCount: f32,
-          _padding1: f32,
-          _padding2: f32,
-          lights: array<Light, 4>,
-        };
-
-        struct MaterialUniforms {
-          alpha: f32,
-          alphaMultiplier: f32,
-          rimIntensity: f32,
-          rimPower: f32,
-          rimColor: vec3f,
-          isOverEyes: f32, // 1.0 if rendering over eyes, 0.0 otherwise
-        };
-
-        struct VertexOutput {
-          @builtin(position) position: vec4f,
-          @location(0) normal: vec3f,
-          @location(1) uv: vec2f,
-          @location(2) worldPos: vec3f,
-        };
-
-        @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-        @group(0) @binding(1) var<uniform> light: LightUniforms;
-        @group(0) @binding(2) var diffuseTexture: texture_2d<f32>;
-        @group(0) @binding(3) var diffuseSampler: sampler;
-        @group(0) @binding(4) var<storage, read> skinMats: array<mat4x4f>;
-        @group(0) @binding(5) var toonTexture: texture_2d<f32>;
-        @group(0) @binding(6) var toonSampler: sampler;
-        @group(0) @binding(7) var<uniform> material: MaterialUniforms;
-
-        @vertex fn vs(
-          @location(0) position: vec3f,
-          @location(1) normal: vec3f,
-          @location(2) uv: vec2f,
-          @location(3) joints0: vec4<u32>,
-          @location(4) weights0: vec4<f32>
-        ) -> VertexOutput {
-          var output: VertexOutput;
-          let pos4 = vec4f(position, 1.0);
-          
-          // Normalize weights to ensure they sum to 1.0 (handles floating-point precision issues)
-          let weightSum = weights0.x + weights0.y + weights0.z + weights0.w;
-          var normalizedWeights: vec4f;
-          if (weightSum > 0.0001) {
-            normalizedWeights = weights0 / weightSum;
-          } else {
-            normalizedWeights = vec4f(1.0, 0.0, 0.0, 0.0);
-          }
-          
-          var skinnedPos = vec4f(0.0, 0.0, 0.0, 0.0);
-          var skinnedNrm = vec3f(0.0, 0.0, 0.0);
-          for (var i = 0u; i < 4u; i++) {
-            let j = joints0[i];
-            let w = normalizedWeights[i];
-            let m = skinMats[j];
-            skinnedPos += (m * pos4) * w;
-            let r3 = mat3x3f(m[0].xyz, m[1].xyz, m[2].xyz);
-            skinnedNrm += (r3 * normal) * w;
-          }
-          let worldPos = skinnedPos.xyz;
-          output.position = camera.projection * camera.view * vec4f(worldPos, 1.0);
-          output.normal = normalize(skinnedNrm);
-          output.uv = uv;
-          output.worldPos = worldPos;
-          return output;
-        }
-
-        @fragment fn fs(input: VertexOutput) -> @location(0) vec4f {
-          let n = normalize(input.normal);
-          let albedo = textureSample(diffuseTexture, diffuseSampler, input.uv).rgb;
-
-          var lightAccum = vec3f(light.ambient);
-          let numLights = u32(light.lightCount);
-          for (var i = 0u; i < numLights; i++) {
-            let l = -light.lights[i].direction;
-            let nDotL = max(dot(n, l), 0.0);
-            let toonUV = vec2f(nDotL, 0.5);
-            let toonFactor = textureSample(toonTexture, toonSampler, toonUV).rgb;
-            let radiance = light.lights[i].color * light.lights[i].intensity;
-            lightAccum += toonFactor * radiance * nDotL;
-          }
-          
-          // Rim light calculation
-          let viewDir = normalize(camera.viewPos - input.worldPos);
-          var rimFactor = 1.0 - max(dot(n, viewDir), 0.0);
-          rimFactor = pow(rimFactor, material.rimPower);
-          let rimLight = material.rimColor * material.rimIntensity * rimFactor;
-          
-          let color = albedo * lightAccum + rimLight;
-          
-          var finalAlpha = material.alpha * material.alphaMultiplier;
-          if (material.isOverEyes > 0.5) {
-            finalAlpha *= 0.5; // Hair over eyes gets 50% alpha
-          }
-          
-          if (finalAlpha < 0.001) {
-            discard;
-          }
-          
-          return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), finalAlpha);
-        }
-      `,
+      code: `${shaderCode}`,
     })
 
     // Create explicit bind group layout for all pipelines using the main shader
-    this.hairBindGroupLayout = this.device.createBindGroupLayout({
-      label: "shared material bind group layout",
+    this.mainBindGroupLayout = this.device.createBindGroupLayout({
+      label: "main material bind group layout",
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // camera
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }, // light
@@ -302,15 +221,14 @@ export class Engine {
       ],
     })
 
-    const sharedPipelineLayout = this.device.createPipelineLayout({
-      label: "shared pipeline layout",
-      bindGroupLayouts: [this.hairBindGroupLayout],
+    const mainPipelineLayout = this.device.createPipelineLayout({
+      label: "main pipeline layout",
+      bindGroupLayouts: [this.mainBindGroupLayout],
     })
 
-    // Single pipeline for all materials with alpha blending
-    this.pipeline = this.device.createRenderPipeline({
+    this.modelPipeline = this.device.createRenderPipeline({
       label: "model pipeline",
-      layout: sharedPipelineLayout,
+      layout: mainPipelineLayout,
       vertex: {
         module: shaderModule,
         buffers: [
@@ -356,7 +274,7 @@ export class Engine {
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       },
       multisample: {
         count: this.sampleCount,
@@ -380,77 +298,8 @@ export class Engine {
 
     const outlineShaderModule = this.device.createShaderModule({
       label: "outline shaders",
-      code: /* wgsl */ `
-        struct CameraUniforms {
-          view: mat4x4f,
-          projection: mat4x4f,
-          viewPos: vec3f,
-          _padding: f32,
-        };
-
-        struct MaterialUniforms {
-          edgeColor: vec4f,
-          edgeSize: f32,
-          isOverEyes: f32, // 1.0 if rendering over eyes, 0.0 otherwise (for hair outlines)
-          _padding1: f32,
-          _padding2: f32,
-        };
-
-        @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-        @group(0) @binding(1) var<uniform> material: MaterialUniforms;
-        @group(0) @binding(2) var<storage, read> skinMats: array<mat4x4f>;
-
-        struct VertexOutput {
-          @builtin(position) position: vec4f,
-        };
-
-        @vertex fn vs(
-          @location(0) position: vec3f,
-          @location(1) normal: vec3f,
-          @location(3) joints0: vec4<u32>,
-          @location(4) weights0: vec4<f32>
-        ) -> VertexOutput {
-          var output: VertexOutput;
-          let pos4 = vec4f(position, 1.0);
-          
-          // Normalize weights to ensure they sum to 1.0 (handles floating-point precision issues)
-          let weightSum = weights0.x + weights0.y + weights0.z + weights0.w;
-          var normalizedWeights: vec4f;
-          if (weightSum > 0.0001) {
-            normalizedWeights = weights0 / weightSum;
-          } else {
-            normalizedWeights = vec4f(1.0, 0.0, 0.0, 0.0);
-          }
-          
-          var skinnedPos = vec4f(0.0, 0.0, 0.0, 0.0);
-          var skinnedNrm = vec3f(0.0, 0.0, 0.0);
-          for (var i = 0u; i < 4u; i++) {
-            let j = joints0[i];
-            let w = normalizedWeights[i];
-            let m = skinMats[j];
-            skinnedPos += (m * pos4) * w;
-            let r3 = mat3x3f(m[0].xyz, m[1].xyz, m[2].xyz);
-            skinnedNrm += (r3 * normal) * w;
-          }
-          let worldPos = skinnedPos.xyz;
-          let worldNormal = normalize(skinnedNrm);
-          
-          // MMD invert hull: expand vertices outward along normals
-          let scaleFactor = 0.01;
-          let expandedPos = worldPos + worldNormal * material.edgeSize * scaleFactor;
-          output.position = camera.projection * camera.view * vec4f(expandedPos, 1.0);
-          return output;
-        }
-
-        @fragment fn fs() -> @location(0) vec4f {
-          var color = material.edgeColor;
-          
-          if (material.isOverEyes > 0.5) {
-            color.a *= 0.5; // Hair outlines over eyes get 50% alpha
-          }
-          
-          return color;
-        }
+      code: `
+       ${outlineShaderCode}
       `,
     })
 
@@ -511,16 +360,16 @@ export class Engine {
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal",
       },
       multisample: {
         count: this.sampleCount,
       },
     })
 
-    // Unified hair outline pipeline: single pass without stencil testing, uses depth test "less-equal" to draw everywhere hair exists
-    this.hairUnifiedOutlinePipeline = this.device.createRenderPipeline({
-      label: "unified hair outline pipeline",
+    // Hair outline pipeline
+    this.hairOutlinePipeline = this.device.createRenderPipeline({
+      label: "hair outline pipeline",
       layout: outlinePipelineLayout,
       vertex: {
         module: outlineShaderModule,
@@ -589,7 +438,7 @@ export class Engine {
     // Eye overlay pipeline (renders after opaque, writes stencil)
     this.eyePipeline = this.device.createRenderPipeline({
       label: "eye overlay pipeline",
-      layout: sharedPipelineLayout,
+      layout: mainPipelineLayout,
       vertex: {
         module: shaderModule,
         buffers: [
@@ -631,11 +480,14 @@ export class Engine {
           },
         ],
       },
-      primitive: { cullMode: "none" },
+      primitive: { cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        depthWriteEnabled: false, // Don't write depth
-        depthCompare: "less", // Respect existing depth
+        depthWriteEnabled: true, // Write depth to occlude back of head
+        depthCompare: "less-equal", // More lenient to reduce precision conflicts
+        depthBias: -0.00005, // Reduced bias to minimize conflicts while still occluding back face
+        depthBiasSlopeScale: 0.0,
+        depthBiasClamp: 0.0,
         stencilFront: {
           compare: "always",
           failOp: "keep",
@@ -655,56 +507,13 @@ export class Engine {
     // Depth-only shader for hair pre-pass (reduces overdraw by early depth rejection)
     const depthOnlyShaderModule = this.device.createShaderModule({
       label: "depth only shader",
-      code: /* wgsl */ `
-        struct CameraUniforms {
-          view: mat4x4f,
-          projection: mat4x4f,
-          viewPos: vec3f,
-          _padding: f32,
-        };
-
-        @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-        @group(0) @binding(4) var<storage, read> skinMats: array<mat4x4f>;
-
-        @vertex fn vs(
-          @location(0) position: vec3f,
-          @location(1) normal: vec3f,
-          @location(3) joints0: vec4<u32>,
-          @location(4) weights0: vec4<f32>
-        ) -> @builtin(position) vec4f {
-          let pos4 = vec4f(position, 1.0);
-          
-          // Normalize weights
-          let weightSum = weights0.x + weights0.y + weights0.z + weights0.w;
-          var normalizedWeights: vec4f;
-          if (weightSum > 0.0001) {
-            normalizedWeights = weights0 / weightSum;
-          } else {
-            normalizedWeights = vec4f(1.0, 0.0, 0.0, 0.0);
-          }
-          
-          var skinnedPos = vec4f(0.0, 0.0, 0.0, 0.0);
-          for (var i = 0u; i < 4u; i++) {
-            let j = joints0[i];
-            let w = normalizedWeights[i];
-            let m = skinMats[j];
-            skinnedPos += (m * pos4) * w;
-          }
-          let worldPos = skinnedPos.xyz;
-          let clipPos = camera.projection * camera.view * vec4f(worldPos, 1.0);
-          return clipPos;
-        }
-
-        @fragment fn fs() -> @location(0) vec4f {
-          return vec4f(0.0, 0.0, 0.0, 0.0); // Transparent - color writes disabled via writeMask
-        }
-      `,
+      code: /* wgsl */ `${depthOnlyShaderCode}`,
     })
 
     // Hair depth pre-pass pipeline: depth-only with color writes disabled to eliminate overdraw
     this.hairDepthPipeline = this.device.createRenderPipeline({
       label: "hair depth pre-pass",
-      layout: sharedPipelineLayout,
+      layout: mainPipelineLayout,
       vertex: {
         module: depthOnlyShaderModule,
         buffers: [
@@ -735,19 +544,22 @@ export class Engine {
           },
         ],
       },
-      primitive: { cullMode: "none" },
+      primitive: { cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: true,
-        depthCompare: "less",
+        depthCompare: "less-equal", // Match the color pass compare mode for consistency
+        depthBias: 0.0,
+        depthBiasSlopeScale: 0.0,
+        depthBiasClamp: 0.0,
       },
       multisample: { count: this.sampleCount },
     })
 
-    // Unified hair pipeline for over-eyes (stencil == 1): single pass with dynamic branching
-    this.hairUnifiedPipelineOverEyes = this.device.createRenderPipeline({
-      label: "unified hair pipeline (over eyes)",
-      layout: sharedPipelineLayout,
+    // Hair pipeline for rendering over eyes (stencil == 1)
+    this.hairPipelineOverEyes = this.device.createRenderPipeline({
+      label: "hair pipeline (over eyes)",
+      layout: mainPipelineLayout,
       vertex: {
         module: shaderModule,
         buffers: [
@@ -789,11 +601,11 @@ export class Engine {
           },
         ],
       },
-      primitive: { cullMode: "none" },
+      primitive: { cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false, // Don't write depth (already written in pre-pass)
-        depthCompare: "equal", // Only render where depth matches pre-pass
+        depthCompare: "less-equal", // More lenient than "equal" to avoid precision issues with MSAA
         stencilFront: {
           compare: "equal", // Only render where stencil == 1 (over eyes)
           failOp: "keep",
@@ -810,10 +622,10 @@ export class Engine {
       multisample: { count: this.sampleCount },
     })
 
-    // Unified pipeline for hair over non-eyes (stencil != 1)
-    this.hairUnifiedPipelineOverNonEyes = this.device.createRenderPipeline({
-      label: "unified hair pipeline (over non-eyes)",
-      layout: sharedPipelineLayout,
+    // Hair pipeline for rendering over non-eyes (stencil != 1)
+    this.hairPipelineOverNonEyes = this.device.createRenderPipeline({
+      label: "hair pipeline (over non-eyes)",
+      layout: mainPipelineLayout,
       vertex: {
         module: shaderModule,
         buffers: [
@@ -855,11 +667,11 @@ export class Engine {
           },
         ],
       },
-      primitive: { cullMode: "none" },
+      primitive: { cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
         depthWriteEnabled: false, // Don't write depth (already written in pre-pass)
-        depthCompare: "equal", // Only render where depth matches pre-pass
+        depthCompare: "less-equal", // More lenient than "equal" to avoid precision issues with MSAA
         stencilFront: {
           compare: "not-equal", // Only render where stencil != 1 (over non-eyes)
           failOp: "keep",
@@ -882,30 +694,7 @@ export class Engine {
     const computeShader = this.device.createShaderModule({
       label: "skin matrix compute",
       code: /* wgsl */ `
-        struct BoneCountUniform {
-          count: u32,
-          _padding1: u32,
-          _padding2: u32,
-          _padding3: u32,
-          _padding4: vec4<u32>,
-        };
-        
-        @group(0) @binding(0) var<uniform> boneCount: BoneCountUniform;
-        @group(0) @binding(1) var<storage, read> worldMatrices: array<mat4x4f>;
-        @group(0) @binding(2) var<storage, read> inverseBindMatrices: array<mat4x4f>;
-        @group(0) @binding(3) var<storage, read_write> skinMatrices: array<mat4x4f>;
-        
-        @compute @workgroup_size(64)
-        fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
-          let boneIndex = globalId.x;
-          // Bounds check: we dispatch workgroups (64 threads each), so some threads may be out of range
-          if (boneIndex >= boneCount.count) {
-            return;
-          }
-          let worldMat = worldMatrices[boneIndex];
-          let invBindMat = inverseBindMatrices[boneIndex];
-          skinMatrices[boneIndex] = worldMat * invBindMat;
-        }
+        ${computeShaderCode}
       `,
     })
 
@@ -964,43 +753,7 @@ export class Engine {
     const bloomExtractShader = this.device.createShaderModule({
       label: "bloom extract",
       code: /* wgsl */ `
-        struct VertexOutput {
-          @builtin(position) position: vec4f,
-          @location(0) uv: vec2f,
-        };
-
-        @vertex fn vs(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-          var output: VertexOutput;
-          // Generate fullscreen quad from vertex index
-          let x = f32((vertexIndex << 1u) & 2u) * 2.0 - 1.0;
-          let y = f32(vertexIndex & 2u) * 2.0 - 1.0;
-          output.position = vec4f(x, y, 0.0, 1.0);
-          output.uv = vec2f(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-          return output;
-        }
-
-        struct BloomExtractUniforms {
-          threshold: f32,
-          _padding1: f32,
-          _padding2: f32,
-          _padding3: f32,
-          _padding4: f32,
-          _padding5: f32,
-          _padding6: f32,
-          _padding7: f32,
-        };
-
-        @group(0) @binding(0) var inputTexture: texture_2d<f32>;
-        @group(0) @binding(1) var inputSampler: sampler;
-        @group(0) @binding(2) var<uniform> extractUniforms: BloomExtractUniforms;
-
-        @fragment fn fs(input: VertexOutput) -> @location(0) vec4f {
-          let color = textureSample(inputTexture, inputSampler, input.uv);
-          // Extract bright areas above threshold
-          let threshold = extractUniforms.threshold;
-          let bloom = max(vec3f(0.0), color.rgb - vec3f(threshold)) / max(0.001, 1.0 - threshold);
-          return vec4f(bloom, color.a);
-        }
+        ${bloomExtractShaderCode}
       `,
     })
 
@@ -1008,55 +761,7 @@ export class Engine {
     const bloomBlurShader = this.device.createShaderModule({
       label: "bloom blur",
       code: /* wgsl */ `
-        struct VertexOutput {
-          @builtin(position) position: vec4f,
-          @location(0) uv: vec2f,
-        };
-
-        @vertex fn vs(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-          var output: VertexOutput;
-          let x = f32((vertexIndex << 1u) & 2u) * 2.0 - 1.0;
-          let y = f32(vertexIndex & 2u) * 2.0 - 1.0;
-          output.position = vec4f(x, y, 0.0, 1.0);
-          output.uv = vec2f(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-          return output;
-        }
-
-        struct BlurUniforms {
-          direction: vec2f,
-          _padding1: f32,
-          _padding2: f32,
-          _padding3: f32,
-          _padding4: f32,
-          _padding5: f32,
-          _padding6: f32,
-        };
-
-        @group(0) @binding(0) var inputTexture: texture_2d<f32>;
-        @group(0) @binding(1) var inputSampler: sampler;
-        @group(0) @binding(2) var<uniform> blurUniforms: BlurUniforms;
-
-        // 9-tap gaussian blur
-        @fragment fn fs(input: VertexOutput) -> @location(0) vec4f {
-          let texelSize = 1.0 / vec2f(textureDimensions(inputTexture));
-          var result = vec4f(0.0);
-          
-          // Gaussian weights for 9-tap filter
-          let weights = array<f32, 9>(
-            0.01621622, 0.05405405, 0.12162162,
-            0.19459459, 0.22702703,
-            0.19459459, 0.12162162, 0.05405405, 0.01621622
-          );
-          
-          let offsets = array<f32, 9>(-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0);
-          
-          for (var i = 0u; i < 9u; i++) {
-            let offset = offsets[i] * texelSize * blurUniforms.direction;
-            result += textureSample(inputTexture, inputSampler, input.uv + offset) * weights[i];
-          }
-          
-          return result;
-        }
+       ${bloomBlurShaderCode}
       `,
     })
 
@@ -1064,44 +769,7 @@ export class Engine {
     const bloomComposeShader = this.device.createShaderModule({
       label: "bloom compose",
       code: /* wgsl */ `
-        struct VertexOutput {
-          @builtin(position) position: vec4f,
-          @location(0) uv: vec2f,
-        };
-
-        @vertex fn vs(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-          var output: VertexOutput;
-          let x = f32((vertexIndex << 1u) & 2u) * 2.0 - 1.0;
-          let y = f32(vertexIndex & 2u) * 2.0 - 1.0;
-          output.position = vec4f(x, y, 0.0, 1.0);
-          output.uv = vec2f(x * 0.5 + 0.5, 1.0 - (y * 0.5 + 0.5));
-          return output;
-        }
-
-        struct BloomComposeUniforms {
-          intensity: f32,
-          _padding1: f32,
-          _padding2: f32,
-          _padding3: f32,
-          _padding4: f32,
-          _padding5: f32,
-          _padding6: f32,
-          _padding7: f32,
-        };
-
-        @group(0) @binding(0) var sceneTexture: texture_2d<f32>;
-        @group(0) @binding(1) var sceneSampler: sampler;
-        @group(0) @binding(2) var bloomTexture: texture_2d<f32>;
-        @group(0) @binding(3) var bloomSampler: sampler;
-        @group(0) @binding(4) var<uniform> composeUniforms: BloomComposeUniforms;
-
-        @fragment fn fs(input: VertexOutput) -> @location(0) vec4f {
-          let scene = textureSample(sceneTexture, sceneSampler, input.uv);
-          let bloom = textureSample(bloomTexture, bloomSampler, input.uv);
-          // Additive blending with intensity control
-          let result = scene.rgb + bloom.rgb * composeUniforms.intensity;
-          return vec4f(result, scene.a);
-        }
+        ${bloomComposeShaderCode}
       `,
     })
 
@@ -1198,69 +866,6 @@ export class Engine {
     this.linearSampler = linearSampler
   }
 
-  // Setup bloom textures and bind groups (called when canvas is resized)
-  private setupBloom(width: number, height: number) {
-    // Create bloom textures (half resolution for performance)
-    const bloomWidth = Math.floor(width / 2)
-    const bloomHeight = Math.floor(height / 2)
-    this.bloomExtractTexture = this.device.createTexture({
-      label: "bloom extract",
-      size: [bloomWidth, bloomHeight],
-      format: this.presentationFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.bloomBlurTexture1 = this.device.createTexture({
-      label: "bloom blur 1",
-      size: [bloomWidth, bloomHeight],
-      format: this.presentationFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    this.bloomBlurTexture2 = this.device.createTexture({
-      label: "bloom blur 2",
-      size: [bloomWidth, bloomHeight],
-      format: this.presentationFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    })
-
-    // Create bloom bind groups
-    this.bloomExtractBindGroup = this.device.createBindGroup({
-      layout: this.bloomExtractPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sceneRenderTexture.createView() },
-        { binding: 1, resource: this.linearSampler },
-        { binding: 2, resource: { buffer: this.bloomThresholdBuffer } },
-      ],
-    })
-
-    this.bloomBlurHBindGroup = this.device.createBindGroup({
-      layout: this.bloomBlurPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.bloomExtractTexture.createView() },
-        { binding: 1, resource: this.linearSampler },
-        { binding: 2, resource: { buffer: this.blurDirectionBuffer } },
-      ],
-    })
-
-    this.bloomBlurVBindGroup = this.device.createBindGroup({
-      layout: this.bloomBlurPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.bloomBlurTexture1.createView() },
-        { binding: 1, resource: this.linearSampler },
-        { binding: 2, resource: { buffer: this.blurDirectionBuffer } },
-      ],
-    })
-
-    this.bloomComposeBindGroup = this.device.createBindGroup({
-      layout: this.bloomComposePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sceneRenderTexture.createView() },
-        { binding: 1, resource: this.linearSampler },
-        { binding: 2, resource: this.bloomBlurTexture2.createView() },
-        { binding: 3, resource: this.linearSampler },
-        { binding: 4, resource: { buffer: this.bloomIntensityBuffer } },
-      ],
-    })
-  }
 
   // Step 3: Setup canvas resize handling
   private setupResize() {
@@ -1269,94 +874,6 @@ export class Engine {
     this.handleResize()
   }
 
-  private handleResize() {
-    const displayWidth = this.canvas.clientWidth;
-    const displayHeight = this.canvas.clientHeight;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.floor(displayWidth * dpr);
-    const height = Math.floor(displayHeight * dpr);
-
-    // Guard against invalid dimensions
-    if (width === 0 || height === 0) {
-      console.warn("[Engine] Canvas has invalid dimensions (0x0), skipping texture recreation.");
-      return;
-    }
-
-    // Only recreate if dimensions actually changed or textures don't exist
-    const sizeUnchanged = this.multisampleTexture &&
-      this.canvas.width === width &&
-      this.canvas.height === height;
-    if (sizeUnchanged) {
-      return;
-    }
-
-    this.canvas.width = width;
-    this.canvas.height = height;
-
-    this.multisampleTexture = this.device.createTexture({
-      label: "multisample render target",
-      size: [width, height],
-      sampleCount: this.sampleCount,
-      format: this.presentationFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-
-    this.depthTexture = this.device.createTexture({
-      label: "depth texture",
-      size: [width, height],
-      sampleCount: this.sampleCount,
-      format: "depth24plus-stencil8",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-
-    // Create scene render texture (non-multisampled for post-processing)
-    this.sceneRenderTexture = this.device.createTexture({
-      label: "scene render texture",
-      size: [width, height],
-      format: this.presentationFormat,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.sceneRenderTextureView = this.sceneRenderTexture.createView();
-
-    // Setup bloom textures and bind groups
-    this.setupBloom(width, height);
-
-    const depthTextureView = this.depthTexture.createView();
-
-    // Render scene to texture instead of directly to canvas
-    const colorAttachment: GPURenderPassColorAttachment =
-      this.sampleCount > 1
-        ? {
-          view: this.multisampleTexture.createView(),
-          resolveTarget: this.sceneRenderTextureView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear",
-          storeOp: "store",
-        }
-        : {
-          view: this.sceneRenderTextureView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear",
-          storeOp: "store",
-        };
-
-    this.renderPassDescriptor = {
-      label: "renderPass",
-      colorAttachments: [colorAttachment],
-      depthStencilAttachment: {
-        view: depthTextureView,
-        depthClearValue: 1.0,
-        depthLoadOp: "clear",
-        depthStoreOp: "store",
-        stencilClearValue: 0,
-        stencilLoadOp: "clear",
-        stencilStoreOp: "discard", // Discard stencil after frame to save bandwidth (we only use it during rendering)
-      },
-    };
-
-    this.camera.aspect = width / height;
-  }
 
   // Step 4: Create camera and uniform buffer
   private setupCamera() {
@@ -1366,7 +883,7 @@ export class Engine {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
 
-    this.camera = new Camera(Math.PI, Math.PI / 2.5, 26.6, new Vec3(0, 12.5, 0))
+    this.camera = new Camera(Math.PI, Math.PI / 2.5, this.cameraDistance, this.cameraTarget)
 
     this.camera.aspect = this.canvas.width / this.canvas.height
     this.camera.attachControl(this.canvas)
@@ -1493,7 +1010,9 @@ export class Engine {
           worldMats.byteOffset,
           worldMats.byteLength
         )
-        this.computeSkinMatrices()
+        const encoder = this.device.createCommandEncoder()
+        this.computeSkinMatrices(encoder)
+        this.device.queue.submit([encoder.finish()])
       }
     }
     for (const [_, keyFrames] of boneKeyFramesByBone.entries()) {
@@ -1570,14 +1089,22 @@ export class Engine {
     }
   }
 
-  // Step 6: Load PMX model file
+  // Load RZeng orv PMX
   public async loadModel(path: string) {
-    const pathParts = path.split("/")
-    pathParts.pop()
-    const dir = pathParts.join("/") + "/"
-    this.modelDir = dir
+    if (path.endsWith(".pmx")) {
+      const pathParts = path.split("/")
+      pathParts.pop()
+      const dir = pathParts.join("/") + "/"
+      this.modelDir = dir
+      const model = await PmxLoader.load(path)
+      this.physics = new Physics(model.getRigidbodies(), model.getJoints())
+      await this.setupModelBuffers(model)
+    } else {
+      const { model, animations, metadata } = await RZengLoader.load(path)
+      await this.setModelFromRZeng(model, animations)
+      console.log('RZeng model loaded:', metadata.modelName)
+    }
 
-    const model = await PmxLoader.load(path)
     // console.log({
     //   vertices: Array.from(model.getVertices()),
     //   indices: Array.from(model.getIndices()),
@@ -1586,96 +1113,252 @@ export class Engine {
     //   bones: model.getSkeleton().bones,
     //   skinning: { joints: Array.from(model.getSkinning().joints), weights: Array.from(model.getSkinning().weights) },
     // })
-    this.physics = new Physics(model.getRigidbodies(), model.getJoints())
-    await this.setupModelBuffers(model)
-  }
 
+  }
+  private handleResize() {
+    const displayWidth = this.canvas.clientWidth
+    const displayHeight = this.canvas.clientHeight
+
+    // Добавляем проверку на минимальный размер
+    if (displayWidth <= 0 || displayHeight <= 0) {
+      console.log('Canvas has zero or negative size, skipping resize')
+      return
+    }
+
+    const dpr = window.devicePixelRatio || 1
+    const width = Math.max(1, Math.floor(displayWidth * dpr)) // Минимальный размер 1px
+    const height = Math.max(1, Math.floor(displayHeight * dpr)) // Минимальный размер 1px
+
+    if (!this.multisampleTexture || this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width
+      this.canvas.height = height
+
+      // Уничтожаем старые текстуры если они существуют
+      this.destroyTextures()
+
+      // Создаем текстуры только если размеры валидны
+      if (width > 0 && height > 0) {
+        this.createTextures(width, height)
+      }
+    }
+  }
+  private createTextures(width: number, height: number) {
+    this.multisampleTexture = this.device.createTexture({
+      label: "multisample render target",
+      size: [width, height],
+      sampleCount: this.sampleCount,
+      format: this.presentationFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+
+    this.depthTexture = this.device.createTexture({
+      label: "depth texture",
+      size: [width, height],
+      sampleCount: this.sampleCount,
+      format: "depth24plus-stencil8",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    })
+
+    // Создаем scene render texture
+    this.sceneRenderTexture = this.device.createTexture({
+      label: "scene render texture",
+      size: [width, height],
+      format: this.presentationFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    })
+    this.sceneRenderTextureView = this.sceneRenderTexture.createView()
+
+    // Setup bloom textures
+    this.setupBloom(width, height)
+
+    const depthTextureView = this.depthTexture.createView()
+
+    // Render scene to texture instead of directly to canvas
+    const colorAttachment: GPURenderPassColorAttachment =
+      this.sampleCount > 1
+        ? {
+          view: this.multisampleTexture.createView(),
+          resolveTarget: this.sceneRenderTextureView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        }
+        : {
+          view: this.sceneRenderTextureView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        }
+
+    this.renderPassDescriptor = {
+      label: "renderPass",
+      colorAttachments: [colorAttachment],
+      depthStencilAttachment: {
+        view: depthTextureView,
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+        stencilClearValue: 0,
+        stencilLoadOp: "clear",
+        stencilStoreOp: "discard",
+      },
+    }
+
+    this.camera.aspect = width / height
+  }
+  private destroyTextures() {
+    // Освобождаем ресурсы старых текстур
+    if (this.multisampleTexture) {
+      this.multisampleTexture.destroy()
+      this.multisampleTexture = null!
+    }
+    if (this.depthTexture) {
+      this.depthTexture.destroy()
+      this.depthTexture = null!
+    }
+    if (this.sceneRenderTexture) {
+      this.sceneRenderTexture.destroy()
+      this.sceneRenderTexture = null!
+    }
+    if (this.bloomExtractTexture) {
+      this.bloomExtractTexture.destroy()
+      this.bloomExtractTexture = null!
+    }
+    if (this.bloomBlurTexture1) {
+      this.bloomBlurTexture1.destroy()
+      this.bloomBlurTexture1 = null!
+    }
+    if (this.bloomBlurTexture2) {
+      this.bloomBlurTexture2.destroy()
+      this.bloomBlurTexture2 = null!
+    }
+  }
   public rotateBones(bones: string[], rotations: Quat[], durationMs?: number) {
     this.currentModel?.rotateBones(bones, rotations, durationMs)
   }
+  private textureData: Map<string, ArrayBuffer> = new Map()
 
+  async setModelFromRZeng(model: Model, animations?: Map<string, VMDKeyFrame[]>): Promise<void> {
+    this.textureData = model.getTextureData()
+
+    console.log('Texture data loaded from RZeng:', this.textureData.size, 'textures') // Для отладки
+
+    this.currentModel = model
+    this.physics = new Physics(model.getRigidbodies(), model.getJoints())
+    this.modelDir = ""
+
+    // Настраиваем буферы модели
+    await this.setupModelBuffers(model)
+
+    console.log('Model set from RZeng:', model.getBoneNames().length, 'bones')
+  }
+
+  /**
+   * Загружает RZeng файл из ArrayBuffer
+   */
+  async loadRZengFromBuffer(buffer: ArrayBuffer): Promise<void> {
+    const { model, animations } = await RZengLoader.loadFromBuffer(buffer)
+    await this.setModelFromRZeng(model, animations)
+  }
   // Step 7: Create vertex, index, and joint buffers
   private async setupModelBuffers(model: Model) {
-    this.currentModel = model
-    const vertices = model.getVertices()
-    const skinning = model.getSkinning()
-    const skeleton = model.getSkeleton()
+    this.currentModel = model;
+    const vertices = model.getVertices();
+    const skinning = model.getSkinning();
+    const skeleton = model.getSkeleton();
 
+    // Создаем все буферы в одном месте для минимизации вызовов GPU
+    const bufferInitPromises = [];
+
+    // Основной буфер вершин
     this.vertexBuffer = this.device.createBuffer({
       label: "model vertex buffer",
       size: vertices.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    })
-    this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices)
+    });
+    bufferInitPromises.push(
+      this.device.queue.writeBuffer(this.vertexBuffer, 0, vertices)
+    );
 
+    // Буферы скининга
     this.jointsBuffer = this.device.createBuffer({
       label: "joints buffer",
       size: skinning.joints.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    })
-    this.device.queue.writeBuffer(
-      this.jointsBuffer,
-      0,
-      skinning.joints.buffer,
-      skinning.joints.byteOffset,
-      skinning.joints.byteLength
-    )
+    });
+    bufferInitPromises.push(
+      this.device.queue.writeBuffer(
+        this.jointsBuffer,
+        0,
+        skinning.joints.buffer,
+        skinning.joints.byteOffset,
+        skinning.joints.byteLength
+      )
+    );
 
     this.weightsBuffer = this.device.createBuffer({
       label: "weights buffer",
       size: skinning.weights.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    })
-    this.device.queue.writeBuffer(
-      this.weightsBuffer,
-      0,
-      skinning.weights.buffer,
-      skinning.weights.byteOffset,
-      skinning.weights.byteLength
-    )
+    });
+    bufferInitPromises.push(
+      this.device.queue.writeBuffer(
+        this.weightsBuffer,
+        0,
+        skinning.weights.buffer,
+        skinning.weights.byteOffset,
+        skinning.weights.byteLength
+      )
+    );
 
-    const boneCount = skeleton.bones.length
-    const matrixSize = boneCount * 16 * 4
+    const boneCount = skeleton.bones.length;
+    const matrixSize = Math.max(256, boneCount * 16 * 4);
 
+    // Предварительно вычисляем необходимые размеры буферов
     this.skinMatrixBuffer = this.device.createBuffer({
       label: "skin matrices",
-      size: Math.max(256, matrixSize),
+      size: matrixSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX,
-    })
+    });
 
     this.worldMatrixBuffer = this.device.createBuffer({
       label: "world matrices",
-      size: Math.max(256, matrixSize),
+      size: matrixSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    })
+    });
 
     this.inverseBindMatrixBuffer = this.device.createBuffer({
       label: "inverse bind matrices",
-      size: Math.max(256, matrixSize),
+      size: matrixSize,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    })
+    });
 
-    const invBindMatrices = skeleton.inverseBindMatrices
-    this.device.queue.writeBuffer(
-      this.inverseBindMatrixBuffer,
-      0,
-      invBindMatrices.buffer,
-      invBindMatrices.byteOffset,
-      invBindMatrices.byteLength
-    )
+    const invBindMatrices = skeleton.inverseBindMatrices;
+    bufferInitPromises.push(
+      this.device.queue.writeBuffer(
+        this.inverseBindMatrixBuffer,
+        0,
+        invBindMatrices.buffer,
+        invBindMatrices.byteOffset,
+        invBindMatrices.byteLength
+      )
+    );
 
     this.boneCountBuffer = this.device.createBuffer({
       label: "bone count uniform",
-      size: 32, // Minimum uniform buffer size is 32 bytes
+      size: 32,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    })
-    const boneCountData = new Uint32Array(8) // 32 bytes total
-    boneCountData[0] = boneCount
-    this.device.queue.writeBuffer(this.boneCountBuffer, 0, boneCountData)
+    });
 
-    this.createSkinMatrixComputePipeline()
+    const boneCountData = new Uint32Array(8);
+    boneCountData[0] = boneCount;
+    bufferInitPromises.push(
+      this.device.queue.writeBuffer(this.boneCountBuffer, 0, boneCountData)
+    );
 
-    // Create compute bind group once (reused every frame)
+    this.createSkinMatrixComputePipeline();
+
+    // Создаем bind group для вычислений
     this.skinMatrixComputeBindGroup = this.device.createBindGroup({
       layout: this.skinMatrixComputePipeline!.getBindGroupLayout(0),
       entries: [
@@ -1684,392 +1367,579 @@ export class Engine {
         { binding: 2, resource: { buffer: this.inverseBindMatrixBuffer } },
         { binding: 3, resource: { buffer: this.skinMatrixBuffer } },
       ],
-    })
+    });
 
-    const indices = model.getIndices()
+    const indices = model.getIndices();
     if (indices) {
       this.indexBuffer = this.device.createBuffer({
         label: "model index buffer",
         size: indices.byteLength,
         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-      })
-      this.device.queue.writeBuffer(this.indexBuffer, 0, indices)
+      });
+      bufferInitPromises.push(
+        this.device.queue.writeBuffer(this.indexBuffer, 0, indices)
+      );
     } else {
-      throw new Error("Model has no index buffer")
+      throw new Error("Model has no index buffer");
     }
 
-    await this.setupMaterials(model)
+    // Ждем завершения всех операций записи в буферы
+    await Promise.all(bufferInitPromises);
+
+    // Параллельная загрузка материалов
+    await this.setupMaterials(model);
+  }
+  // Добавляем недостающие методы в класс Engine
+
+  private async loadToonTexture(toonTextureIndex: number): Promise<GPUTexture> {
+    // Сначала пытаемся загрузить как обычную текстуру
+    const texture = await this.loadTextureByIndex(toonTextureIndex, this.currentModel?.getTextures() || []);
+    if (texture) return texture;
+
+    // Default toon texture fallback - cache it
+    const defaultToonPath = "__default_toon__";
+    const cached = this.textureCache.get(defaultToonPath);
+    if (cached) return cached;
+
+    const defaultToonData = new Uint8Array(256 * 2 * 4);
+    for (let i = 0; i < 256; i++) {
+      const factor = i / 255.0;
+      const gray = Math.floor(128 + factor * 127);
+      defaultToonData[i * 4] = gray;
+      defaultToonData[i * 4 + 1] = gray;
+      defaultToonData[i * 4 + 2] = gray;
+      defaultToonData[i * 4 + 3] = 255;
+      defaultToonData[(256 + i) * 4] = gray;
+      defaultToonData[(256 + i) * 4 + 1] = gray;
+      defaultToonData[(256 + i) * 4 + 2] = gray;
+      defaultToonData[(256 + i) * 4 + 3] = 255;
+    }
+
+    const defaultToonTexture = this.device.createTexture({
+      label: "default toon texture",
+      size: [256, 2],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    this.device.queue.writeTexture(
+      { texture: defaultToonTexture },
+      defaultToonData,
+      { bytesPerRow: 256 * 4 },
+      [256, 2]
+    );
+
+    this.textureCache.set(defaultToonPath, defaultToonTexture);
+    return defaultToonTexture;
   }
 
-  private opaqueNonEyeNonHairDraws: {
-    count: number
-    firstIndex: number
-    bindGroup: GPUBindGroup
-    isTransparent: boolean
-  }[] = []
-  private eyeDraws: { count: number; firstIndex: number; bindGroup: GPUBindGroup; isTransparent: boolean }[] = []
-  private hairDrawsOverEyes: { count: number; firstIndex: number; bindGroup: GPUBindGroup; isTransparent: boolean }[] =
-    []
-  private hairDrawsOverNonEyes: {
-    count: number
-    firstIndex: number
-    bindGroup: GPUBindGroup
-    isTransparent: boolean
-  }[] = []
-  private transparentNonEyeNonHairDraws: {
-    count: number
-    firstIndex: number
-    bindGroup: GPUBindGroup
-    isTransparent: boolean
-  }[] = []
-  private opaqueNonEyeNonHairOutlineDraws: {
-    count: number
-    firstIndex: number
-    bindGroup: GPUBindGroup
-    isTransparent: boolean
-  }[] = []
-  private eyeOutlineDraws: { count: number; firstIndex: number; bindGroup: GPUBindGroup; isTransparent: boolean }[] = []
-  private hairOutlineDraws: { count: number; firstIndex: number; bindGroup: GPUBindGroup; isTransparent: boolean }[] =
-    []
-  private transparentNonEyeNonHairOutlineDraws: {
-    count: number
-    firstIndex: number
-    bindGroup: GPUBindGroup
-    isTransparent: boolean
-  }[] = []
+  private async createHairMaterialBindGroups(
+    mat: Material,
+    diffuseTexture: GPUTexture,
+    toonTexture: GPUTexture,
+    currentIndexOffset: number,
+    indexCount: number
+  ): Promise<void> {
+    const materialAlpha = mat.diffuse[3];
 
-  // Step 8: Load textures and create material bind groups
-  private async setupMaterials(model: Model) {
-    const materials = model.getMaterials()
-    if (materials.length === 0) {
-      throw new Error("Model has no materials")
-    }
+    // Создаем отдельные bind groups для волос над глазами и над не-глазами
+    const createHairBindGroup = (isOverEyes: boolean) => {
+      const uniformData = new Float32Array(12);
+      uniformData[0] = materialAlpha;
+      uniformData[1] = isOverEyes ? 0.5 : 1.0; // alphaMultiplier
+      uniformData[2] = this.rimLightIntensity;
+      uniformData[3] = 0.0; // _padding1
+      uniformData[4] = 1.0; // rimColor.r
+      uniformData[5] = 1.0; // rimColor.g
+      uniformData[6] = 1.0; // rimColor.b
+      uniformData[7] = isOverEyes ? 1.0 : 0.0; // isOverEyes
+      uniformData[8] = mat.diffuse[0]; // diffuseColor.r
+      uniformData[9] = mat.diffuse[1]; // diffuseColor.g
+      uniformData[10] = mat.diffuse[2]; // diffuseColor.b
+      uniformData[11] = mat.diffuse[3]; // diffuseColor.a
 
-    const textures = model.getTextures()
-
-    const loadTextureByIndex = async (texIndex: number): Promise<GPUTexture | null> => {
-      if (texIndex < 0 || texIndex >= textures.length) {
-        return null
-      }
-
-      const path = this.modelDir + textures[texIndex].path
-      const texture = await this.createTextureFromPath(path)
-      return texture
-    }
-
-    const loadToonTexture = async (toonTextureIndex: number): Promise<GPUTexture> => {
-      const texture = await loadTextureByIndex(toonTextureIndex)
-      if (texture) return texture
-
-      // Default toon texture fallback - cache it
-      const defaultToonPath = "__default_toon__"
-      const cached = this.textureCache.get(defaultToonPath)
-      if (cached) return cached
-
-      const defaultToonData = new Uint8Array(256 * 2 * 4)
-      for (let i = 0; i < 256; i++) {
-        const factor = i / 255.0
-        const gray = Math.floor(128 + factor * 127)
-        defaultToonData[i * 4] = gray
-        defaultToonData[i * 4 + 1] = gray
-        defaultToonData[i * 4 + 2] = gray
-        defaultToonData[i * 4 + 3] = 255
-        defaultToonData[(256 + i) * 4] = gray
-        defaultToonData[(256 + i) * 4 + 1] = gray
-        defaultToonData[(256 + i) * 4 + 2] = gray
-        defaultToonData[(256 + i) * 4 + 3] = 255
-      }
-      const defaultToonTexture = this.device.createTexture({
-        label: "default toon texture",
-        size: [256, 2],
-        format: "rgba8unorm",
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      })
-      this.device.queue.writeTexture(
-        { texture: defaultToonTexture },
-        defaultToonData,
-        { bytesPerRow: 256 * 4 },
-        [256, 2]
-      )
-      this.textureCache.set(defaultToonPath, defaultToonTexture)
-      this.textureSizes.set(defaultToonPath, { width: 256, height: 2 })
-      return defaultToonTexture
-    }
-
-    this.opaqueNonEyeNonHairDraws = []
-    this.eyeDraws = []
-    this.hairDrawsOverEyes = []
-    this.hairDrawsOverNonEyes = []
-    this.transparentNonEyeNonHairDraws = []
-    this.opaqueNonEyeNonHairOutlineDraws = []
-    this.eyeOutlineDraws = []
-    this.hairOutlineDraws = []
-    this.transparentNonEyeNonHairOutlineDraws = []
-    let runningFirstIndex = 0
-
-    for (const mat of materials) {
-      const matCount = mat.vertexCount | 0
-      if (matCount === 0) continue
-
-      const diffuseTexture = await loadTextureByIndex(mat.diffuseTextureIndex)
-      if (!diffuseTexture) throw new Error(`Material "${mat.name}" has no diffuse texture`)
-
-      const toonTexture = await loadToonTexture(mat.toonTextureIndex)
-
-      const materialAlpha = mat.diffuse[3]
-      const EPSILON = 0.001
-      const isTransparent = materialAlpha < 1.0 - EPSILON
-
-      // Create material uniform data
-      const materialUniformData = new Float32Array(8)
-      materialUniformData[0] = materialAlpha
-      materialUniformData[1] = 1.0 // alphaMultiplier: 1.0 for non-hair materials
-      materialUniformData[2] = this.rimLightIntensity
-      materialUniformData[3] = this.rimLightPower
-      materialUniformData[4] = 1.0 // rimColor.r
-      materialUniformData[5] = 1.0 // rimColor.g
-      materialUniformData[6] = 1.0 // rimColor.b
-      materialUniformData[7] = 0.0
-
-      const materialUniformBuffer = this.device.createBuffer({
-        label: `material uniform: ${mat.name}`,
-        size: materialUniformData.byteLength,
+      const buffer = this.device.createBuffer({
+        label: `material uniform (${isOverEyes ? "over eyes" : "over non-eyes"}): ${mat.name}`,
+        size: uniformData.byteLength,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      })
-      this.device.queue.writeBuffer(materialUniformBuffer, 0, materialUniformData)
+      });
 
-      // Create bind groups using the shared bind group layout - All pipelines (main, eye, hair multiply, hair opaque) use the same shader and layout
-      const bindGroup = this.device.createBindGroup({
-        label: `material bind group: ${mat.name}`,
-        layout: this.hairBindGroupLayout,
+      this.device.queue.writeBuffer(buffer, 0, uniformData);
+
+      return this.device.createBindGroup({
+        label: `material bind group (${isOverEyes ? "over eyes" : "over non-eyes"}): ${mat.name}`,
+        layout: this.mainBindGroupLayout,
         entries: [
           { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
           { binding: 1, resource: { buffer: this.lightUniformBuffer } },
           { binding: 2, resource: diffuseTexture.createView() },
-          { binding: 3, resource: this.textureSampler },
+          { binding: 3, resource: this.materialSampler },
           { binding: 4, resource: { buffer: this.skinMatrixBuffer! } },
           { binding: 5, resource: toonTexture.createView() },
-          { binding: 6, resource: this.textureSampler },
-          { binding: 7, resource: { buffer: materialUniformBuffer } },
+          { binding: 6, resource: this.materialSampler },
+          { binding: 7, resource: { buffer: buffer } },
         ],
-      })
+      });
+    };
 
-      // Classify materials into appropriate draw lists
-      if (mat.isEye) {
-        this.eyeDraws.push({
-          count: matCount,
-          firstIndex: runningFirstIndex,
-          bindGroup,
-          isTransparent,
-        })
-      } else if (mat.isHair) {
-        // Hair materials: create bind groups for unified pipeline with dynamic branching
-        const materialUniformDataHair = new Float32Array(8)
-        materialUniformDataHair[0] = materialAlpha
-        materialUniformDataHair[1] = 1.0 // alphaMultiplier: base value, shader will adjust
-        materialUniformDataHair[2] = this.rimLightIntensity
-        materialUniformDataHair[3] = this.rimLightPower
-        materialUniformDataHair[4] = 1.0 // rimColor.r
-        materialUniformDataHair[5] = 1.0 // rimColor.g
-        materialUniformDataHair[6] = 1.0 // rimColor.b
-        materialUniformDataHair[7] = 0.0
+    const bindGroupOverEyes = createHairBindGroup(true);
+    const bindGroupOverNonEyes = createHairBindGroup(false);
 
-        // Create uniform buffers for both modes
-        const materialUniformBufferOverEyes = this.device.createBuffer({
-          label: `material uniform (over eyes): ${mat.name}`,
-          size: materialUniformDataHair.byteLength,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        })
-        const materialUniformDataOverEyes = new Float32Array(materialUniformDataHair)
-        materialUniformDataOverEyes[7] = 1.0
-        this.device.queue.writeBuffer(materialUniformBufferOverEyes, 0, materialUniformDataOverEyes)
+    const drawCallOverEyes = {
+      count: indexCount,
+      firstIndex: currentIndexOffset,
+      bindGroup: bindGroupOverEyes,
+      isTransparent: materialAlpha < 0.99,
+    };
 
-        const materialUniformBufferOverNonEyes = this.device.createBuffer({
-          label: `material uniform (over non-eyes): ${mat.name}`,
-          size: materialUniformDataHair.byteLength,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        })
-        const materialUniformDataOverNonEyes = new Float32Array(materialUniformDataHair)
-        materialUniformDataOverNonEyes[7] = 0.0
-        this.device.queue.writeBuffer(materialUniformBufferOverNonEyes, 0, materialUniformDataOverNonEyes)
+    const drawCallOverNonEyes = {
+      count: indexCount,
+      firstIndex: currentIndexOffset,
+      bindGroup: bindGroupOverNonEyes,
+      isTransparent: materialAlpha < 0.99,
+    };
 
-        // Create bind groups for both modes
-        const bindGroupOverEyes = this.device.createBindGroup({
-          label: `material bind group (over eyes): ${mat.name}`,
-          layout: this.hairBindGroupLayout,
-          entries: [
-            { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-            { binding: 1, resource: { buffer: this.lightUniformBuffer } },
-            { binding: 2, resource: diffuseTexture.createView() },
-            { binding: 3, resource: this.textureSampler },
-            { binding: 4, resource: { buffer: this.skinMatrixBuffer! } },
-            { binding: 5, resource: toonTexture.createView() },
-            { binding: 6, resource: this.textureSampler },
-            { binding: 7, resource: { buffer: materialUniformBufferOverEyes } },
-          ],
-        })
+    this.hairDrawsOverEyes.push(drawCallOverEyes);
+    this.hairDrawsOverNonEyes.push(drawCallOverNonEyes);
+  }
 
-        const bindGroupOverNonEyes = this.device.createBindGroup({
-          label: `material bind group (over non-eyes): ${mat.name}`,
-          layout: this.hairBindGroupLayout,
-          entries: [
-            { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-            { binding: 1, resource: { buffer: this.lightUniformBuffer } },
-            { binding: 2, resource: diffuseTexture.createView() },
-            { binding: 3, resource: this.textureSampler },
-            { binding: 4, resource: { buffer: this.skinMatrixBuffer! } },
-            { binding: 5, resource: toonTexture.createView() },
-            { binding: 6, resource: this.textureSampler },
-            { binding: 7, resource: { buffer: materialUniformBufferOverNonEyes } },
-          ],
-        })
+  private createOutlineBindGroup(mat: Material, currentIndexOffset: number, indexCount: number): void {
+    const materialUniformData = new Float32Array(8);
+    materialUniformData[0] = mat.edgeColor[0]; // edgeColor.r
+    materialUniformData[1] = mat.edgeColor[1]; // edgeColor.g
+    materialUniformData[2] = mat.edgeColor[2]; // edgeColor.b
+    materialUniformData[3] = mat.edgeColor[3]; // edgeColor.a
+    materialUniformData[4] = mat.edgeSize;
+    materialUniformData[5] = 0.0; // isOverEyes
+    materialUniformData[6] = 0.0;
+    materialUniformData[7] = 0.0;
 
-        // Store both bind groups for unified pipeline
-        this.hairDrawsOverEyes.push({
-          count: matCount,
-          firstIndex: runningFirstIndex,
-          bindGroup: bindGroupOverEyes,
-          isTransparent,
-        })
+    const materialUniformBuffer = this.device.createBuffer({
+      label: `outline material uniform: ${mat.name}`,
+      size: materialUniformData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
 
-        this.hairDrawsOverNonEyes.push({
-          count: matCount,
-          firstIndex: runningFirstIndex,
-          bindGroup: bindGroupOverNonEyes,
-          isTransparent,
-        })
-      } else if (isTransparent) {
-        this.transparentNonEyeNonHairDraws.push({
-          count: matCount,
-          firstIndex: runningFirstIndex,
-          bindGroup,
-          isTransparent,
-        })
-      } else {
-        this.opaqueNonEyeNonHairDraws.push({
-          count: matCount,
-          firstIndex: runningFirstIndex,
-          bindGroup,
-          isTransparent,
-        })
-      }
+    this.device.queue.writeBuffer(materialUniformBuffer, 0, materialUniformData);
 
-      // Outline for all materials (including transparent) - Edge flag is at bit 4 (0x10) in PMX format, not bit 0 (0x01)
-      if ((mat.edgeFlag & 0x10) !== 0 && mat.edgeSize > 0) {
-        const materialUniformData = new Float32Array(8)
-        materialUniformData[0] = mat.edgeColor[0] // edgeColor.r
-        materialUniformData[1] = mat.edgeColor[1] // edgeColor.g
-        materialUniformData[2] = mat.edgeColor[2] // edgeColor.b
-        materialUniformData[3] = mat.edgeColor[3] // edgeColor.a
-        materialUniformData[4] = mat.edgeSize
-        materialUniformData[5] = 0.0 // isOverEyes: 0.0 for all (unified pipeline doesn't use stencil)
-        materialUniformData[6] = 0.0 // _padding1
-        materialUniformData[7] = 0.0 // _padding2
+    const outlineBindGroup = this.device.createBindGroup({
+      label: `outline bind group: ${mat.name}`,
+      layout: this.outlineBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
+        { binding: 1, resource: { buffer: materialUniformBuffer } },
+        { binding: 2, resource: { buffer: this.skinMatrixBuffer! } },
+      ],
+    });
 
-        const materialUniformBuffer = this.device.createBuffer({
-          label: `outline material uniform: ${mat.name}`,
-          size: materialUniformData.byteLength,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        })
-        this.device.queue.writeBuffer(materialUniformBuffer, 0, materialUniformData)
+    const outlineDrawCall = {
+      count: indexCount,
+      firstIndex: currentIndexOffset,
+      bindGroup: outlineBindGroup,
+      isTransparent: mat.diffuse[3] < 0.99,
+    };
 
-        const outlineBindGroup = this.device.createBindGroup({
-          label: `outline bind group: ${mat.name}`,
-          layout: this.outlineBindGroupLayout,
-          entries: [
-            { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
-            { binding: 1, resource: { buffer: materialUniformBuffer } },
-            { binding: 2, resource: { buffer: this.skinMatrixBuffer! } },
-          ],
-        })
-
-        // Classify outlines into appropriate draw lists
-        if (mat.isEye) {
-          this.eyeOutlineDraws.push({
-            count: matCount,
-            firstIndex: runningFirstIndex,
-            bindGroup: outlineBindGroup,
-            isTransparent,
-          })
-        } else if (mat.isHair) {
-          this.hairOutlineDraws.push({
-            count: matCount,
-            firstIndex: runningFirstIndex,
-            bindGroup: outlineBindGroup,
-            isTransparent,
-          })
-        } else if (isTransparent) {
-          this.transparentNonEyeNonHairOutlineDraws.push({
-            count: matCount,
-            firstIndex: runningFirstIndex,
-            bindGroup: outlineBindGroup,
-            isTransparent,
-          })
-        } else {
-          this.opaqueNonEyeNonHairOutlineDraws.push({
-            count: matCount,
-            firstIndex: runningFirstIndex,
-            bindGroup: outlineBindGroup,
-            isTransparent,
-          })
-        }
-      }
-
-      runningFirstIndex += matCount
+    if (mat.isEye) {
+      this.eyeOutlineDraws.push(outlineDrawCall);
+    } else if (mat.isHair) {
+      this.hairOutlineDraws.push(outlineDrawCall);
+    } else if (mat.diffuse[3] < 0.99) {
+      this.transparentOutlineDraws.push(outlineDrawCall);
+    } else {
+      this.opaqueOutlineDraws.push(outlineDrawCall);
     }
   }
 
-  // Helper: Load texture from file path with optional max size limit
-  private async createTextureFromPath(path: string, maxSize: number = 2048): Promise<GPUTexture | null> {
-    const cached = this.textureCache.get(path)
+  // Исправляем создание текстур - используем правильные флаги GPUTextureUsage
+  private async createTextureFromArrayBuffer(data: ArrayBuffer, path: string): Promise<GPUTexture> {
+    const cached = this.textureCache.get(path);
     if (cached) {
-      return cached
+      return cached;
     }
 
     try {
-      const response = await fetch(path)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-      let imageBitmap = await createImageBitmap(await response.blob(), {
+      const mimeType = this.getMimeType(path);
+      const blob = new Blob([data], { type: mimeType });
+
+      const imageBitmap = await createImageBitmap(blob, {
         premultiplyAlpha: "none",
         colorSpaceConversion: "none",
-      })
-
-      // Downscale if texture is too large
-      let finalWidth = imageBitmap.width
-      let finalHeight = imageBitmap.height
-      if (finalWidth > maxSize || finalHeight > maxSize) {
-        const scale = Math.min(maxSize / finalWidth, maxSize / finalHeight)
-        finalWidth = Math.floor(finalWidth * scale)
-        finalHeight = Math.floor(finalHeight * scale)
-
-        // Create canvas to downscale
-        const canvas = new OffscreenCanvas(finalWidth, finalHeight)
-        const ctx = canvas.getContext("2d")
-        if (ctx) {
-          ctx.drawImage(imageBitmap, 0, 0, finalWidth, finalHeight)
-          imageBitmap = await createImageBitmap(canvas)
-        }
-      }
+        imageOrientation: "none"
+      });
 
       const texture = this.device.createTexture({
         label: `texture: ${path}`,
-        size: [finalWidth, finalHeight],
+        size: [imageBitmap.width, imageBitmap.height],
         format: "rgba8unorm",
+        // ИСПРАВЛЕНО: используем правильные флаги GPUTextureUsage
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-      })
-      this.device.queue.copyExternalImageToTexture({ source: imageBitmap }, { texture }, [finalWidth, finalHeight])
+      });
 
-      this.textureCache.set(path, texture)
-      this.textureSizes.set(path, { width: finalWidth, height: finalHeight })
-      return texture
-    } catch {
-      return null
+      this.device.queue.copyExternalImageToTexture(
+        { source: imageBitmap },
+        { texture },
+        [imageBitmap.width, imageBitmap.height]
+      );
+
+      imageBitmap.close();
+
+      this.textureCache.set(path, texture);
+      return texture;
+    } catch (error) {
+      console.error(`Failed to create texture from ArrayBuffer for ${path}:`, error);
+      throw error;
     }
   }
 
-  // Step 9: Render one frame
+  private async createTextureFromPath(path: string): Promise<GPUTexture | null> {
+    const cached = this.textureCache.get(path);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const response = await fetch(path);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const imageBitmap = await createImageBitmap(await response.blob(), {
+        premultiplyAlpha: "none",
+        colorSpaceConversion: "none",
+      });
+
+      const texture = this.device.createTexture({
+        label: `texture: ${path}`,
+        size: [imageBitmap.width, imageBitmap.height],
+        format: "rgba8unorm",
+        // ИСПРАВЛЕНО: используем правильные флаги GPUTextureUsage
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      this.device.queue.copyExternalImageToTexture(
+        { source: imageBitmap },
+        { texture },
+        [imageBitmap.width, imageBitmap.height]
+      );
+
+      this.textureCache.set(path, texture);
+      return texture;
+    } catch {
+      return null;
+    }
+  }
+
+  // Обновляем метод setupBloom для использования правильных флагов
+  private setupBloom(width: number, height: number) {
+    const bloomWidth = Math.floor(width / this.BLOOM_DOWNSCALE_FACTOR);
+    const bloomHeight = Math.floor(height / this.BLOOM_DOWNSCALE_FACTOR);
+
+    this.bloomExtractTexture = this.device.createTexture({
+      label: "bloom extract",
+      size: [bloomWidth, bloomHeight],
+      format: this.presentationFormat,
+      // ИСПРАВЛЕНО: используем правильные флаги GPUTextureUsage
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    this.bloomBlurTexture1 = this.device.createTexture({
+      label: "bloom blur 1",
+      size: [bloomWidth, bloomHeight],
+      format: this.presentationFormat,
+      // ИСПРАВЛЕНО: используем правильные флаги GPUTextureUsage
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    this.bloomBlurTexture2 = this.device.createTexture({
+      label: "bloom blur 2",
+      size: [bloomWidth, bloomHeight],
+      format: this.presentationFormat,
+      // ИСПРАВЛЕНО: используем правильные флаги GPUTextureUsage
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    // Создаем bloom bind groups
+    this.bloomExtractBindGroup = this.device.createBindGroup({
+      layout: this.bloomExtractPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.sceneRenderTexture.createView() },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: { buffer: this.bloomThresholdBuffer } },
+      ],
+    });
+
+    this.bloomBlurHBindGroup = this.device.createBindGroup({
+      layout: this.bloomBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.bloomExtractTexture.createView() },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: { buffer: this.blurDirectionBuffer } },
+      ],
+    });
+
+    this.bloomBlurVBindGroup = this.device.createBindGroup({
+      layout: this.bloomBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.bloomBlurTexture1.createView() },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: { buffer: this.blurDirectionBuffer } },
+      ],
+    });
+
+    this.bloomComposeBindGroup = this.device.createBindGroup({
+      layout: this.bloomComposePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.sceneRenderTexture.createView() },
+        { binding: 1, resource: this.linearSampler },
+        { binding: 2, resource: this.bloomBlurTexture2.createView() },
+        { binding: 3, resource: this.linearSampler },
+        { binding: 4, resource: { buffer: this.bloomIntensityBuffer } },
+      ],
+    });
+  }
+
+
+  private async setupMaterials(model: Model) {
+    const materials = model.getMaterials();
+    if (materials.length === 0) {
+      throw new Error("Model has no materials");
+    }
+
+    const textures = model.getTextures();
+
+    // Предварительная загрузка всех текстур
+    const textureLoadPromises: Promise<[number, GPUTexture | null]>[] = [];
+    const toonTextureLoadPromises: Promise<[number, GPUTexture]>[] = [];
+
+    // Загружаем диффузные текстуры
+    for (let texIndex = 0; texIndex < textures.length; texIndex++) {
+      textureLoadPromises.push(
+        this.loadTextureByIndex(texIndex, textures).then(texture => [texIndex, texture])
+      );
+    }
+
+    // Загружаем toon текстуры параллельно
+    const uniqueToonIndices = new Set<number>();
+    materials.forEach(mat => {
+      if (mat.toonTextureIndex >= 0) {
+        uniqueToonIndices.add(mat.toonTextureIndex);
+      }
+    });
+
+    for (const toonIndex of uniqueToonIndices) {
+      toonTextureLoadPromises.push(
+        this.loadToonTexture(toonIndex).then(texture => [toonIndex, texture])
+      );
+    }
+
+    // Ждем загрузки всех текстур
+    const loadedTextures = new Map<number, GPUTexture | null>();
+    const loadedToonTextures = new Map<number, GPUTexture>();
+
+    const [textureResults, toonResults] = await Promise.all([
+      Promise.all(textureLoadPromises),
+      Promise.all(toonTextureLoadPromises)
+    ]);
+
+    // Заполняем мапы загруженными текстурами
+    textureResults.forEach(([index, texture]) => {
+      loadedTextures.set(index as number, texture);
+    });
+
+    toonResults.forEach(([index, texture]) => {
+      loadedToonTextures.set(index as number, texture);
+    });
+
+    // Инициализируем списки отрисовки
+    this.initializeDrawLists();
+
+    let currentIndexOffset = 0;
+
+    // Создаем bind groups для материалов
+    for (const mat of materials) {
+      const indexCount = mat.vertexCount;
+      if (indexCount === 0) continue;
+
+      const diffuseTexture = loadedTextures.get(mat.diffuseTextureIndex);
+      if (!diffuseTexture) {
+        console.warn(`Material "${mat.name}" has no diffuse texture, skipping`);
+        currentIndexOffset += indexCount;
+        continue;
+      }
+
+      const toonTexture = loadedToonTextures.get(mat.toonTextureIndex) ||
+        await this.loadToonTexture(mat.toonTextureIndex);
+
+      await this.createMaterialBindGroups(
+        mat,
+        diffuseTexture,
+        toonTexture,
+        currentIndexOffset,
+        indexCount
+      );
+
+      currentIndexOffset += indexCount;
+    }
+
+    this.gpuMemoryMB = this.calculateGpuMemory();
+  }
+  private async loadTextureByIndex(texIndex: number, textures: Texture[]): Promise<GPUTexture | null> {
+    if (texIndex < 0 || texIndex >= textures.length) {
+      return null;
+    }
+
+    const textureInfo = textures[texIndex];
+    const path = textureInfo.path;
+
+    // Проверяем кэш
+    const cached = this.textureCache.get(path);
+    if (cached) {
+      return cached;
+    }
+
+    // Пытаемся найти текстуру в данных .rzeng
+    const fileName = path.split(/[\\/]/).pop()!;
+
+    // Проверяем полный путь и имя файла
+    const textureData = this.textureData.get(path) || this.textureData.get(fileName);
+    if (textureData) {
+      try {
+        const texture = await this.createTextureFromArrayBuffer(textureData, path);
+        this.textureCache.set(path, texture);
+        return texture;
+      } catch (error) {
+        console.warn(`Failed to load embedded texture ${path}:`, error);
+      }
+    }
+
+    // Fallback: загрузка по пути
+    if (this.modelDir) {
+      try {
+        const fullPath = this.modelDir + path;
+        const texture = await this.createTextureFromPath(fullPath);
+        if (texture) {
+          this.textureCache.set(path, texture);
+          return texture;
+        }
+      } catch (error) {
+        console.warn(`Failed to load texture from path ${path}:`, error);
+      }
+    }
+
+    return null;
+  }
+
+
+
+  // Инициализация списков отрисовки одним вызовом
+  private initializeDrawLists() {
+    this.opaqueDraws = [];
+    this.eyeDraws = [];
+    this.hairDrawsOverEyes = [];
+    this.hairDrawsOverNonEyes = [];
+    this.transparentDraws = [];
+    this.opaqueOutlineDraws = [];
+    this.eyeOutlineDraws = [];
+    this.hairOutlineDraws = [];
+    this.transparentOutlineDraws = [];
+  }
+
+  // Оптимизированное создание bind groups для материалов
+  private async createMaterialBindGroups(
+    mat: Material,
+    diffuseTexture: GPUTexture,
+    toonTexture: GPUTexture,
+    currentIndexOffset: number,
+    indexCount: number
+  ): Promise<void> {
+    const materialAlpha = mat.diffuse[3];
+    const EPSILON = 0.001;
+    const isTransparent = materialAlpha < 1.0 - EPSILON;
+
+    // Создаем uniform данные для материала
+    const materialUniformData = this.createMaterialUniformData(mat, materialAlpha);
+    const materialUniformBuffer = this.device.createBuffer({
+      label: `material uniform: ${mat.name}`,
+      size: materialUniformData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.device.queue.writeBuffer(materialUniformBuffer, 0, materialUniformData.slice());
+
+    // Основной bind group
+    const bindGroup = this.device.createBindGroup({
+      label: `material bind group: ${mat.name}`,
+      layout: this.mainBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.cameraUniformBuffer } },
+        { binding: 1, resource: { buffer: this.lightUniformBuffer } },
+        { binding: 2, resource: diffuseTexture.createView() },
+        { binding: 3, resource: this.materialSampler },
+        { binding: 4, resource: { buffer: this.skinMatrixBuffer! } },
+        { binding: 5, resource: toonTexture.createView() },
+        { binding: 6, resource: this.materialSampler },
+        { binding: 7, resource: { buffer: materialUniformBuffer } },
+      ],
+    });
+
+    const drawCall = {
+      count: indexCount,
+      firstIndex: currentIndexOffset,
+      bindGroup,
+      isTransparent,
+    };
+
+    // Распределяем по соответствующим спискам отрисовки
+    if (mat.isEye) {
+      this.eyeDraws.push(drawCall);
+    } else if (mat.isHair) {
+      await this.createHairMaterialBindGroups(mat, diffuseTexture, toonTexture, currentIndexOffset, indexCount);
+    } else if (isTransparent) {
+      this.transparentDraws.push(drawCall);
+    } else {
+      this.opaqueDraws.push(drawCall);
+    }
+
+    // Создаем контуры если нужно
+    if ((mat.edgeFlag & 0x10) !== 0 && mat.edgeSize > 0) {
+      this.createOutlineBindGroup(mat, currentIndexOffset, indexCount);
+    }
+  }
+
+  // Предварительное вычисление uniform данных для материала
+  private createMaterialUniformData(mat: Material, materialAlpha: number): Float32Array {
+    const uniformData = new Float32Array(12);
+    uniformData[0] = materialAlpha;
+    uniformData[1] = 1.0; // alphaMultiplier
+    uniformData[2] = this.rimLightIntensity;
+    uniformData[3] = 0.0; // _padding1
+    uniformData[4] = 1.0; // rimColor.r
+    uniformData[5] = 1.0; // rimColor.g
+    uniformData[6] = 1.0; // rimColor.b
+    uniformData[7] = 0.0; // isOverEyes
+    uniformData[8] = mat.diffuse[0]; // diffuse.r
+    uniformData[9] = mat.diffuse[1]; // diffuse.g
+    uniformData[10] = mat.diffuse[2]; // diffuse.b
+    uniformData[11] = mat.diffuse[3]; // diffuse.a
+
+    return uniformData;
+  }
+
+
+  private getMimeType(filename: string): string {
+    const ext = filename.toLowerCase().split('.').pop()
+    switch (ext) {
+      case 'png': return 'image/png'
+      case 'jpg':
+      case 'jpeg': return 'image/jpeg'
+      case 'bmp': return 'image/bmp'
+      case 'tga': return 'image/x-tga'
+      case 'gif': return 'image/gif'
+      default: return 'image/png'
+    }
+  }
+
+
+  // Render strategy: 1) Opaque non-eye/hair 2) Eyes (stencil=1) 3) Hair (depth pre-pass + split by stencil) 4) Transparent 5) Bloom
   public render() {
     if (this.multisampleTexture && this.camera && this.device && this.currentModel) {
       const currentTime = performance.now()
@@ -2079,9 +1949,11 @@ export class Engine {
       this.updateCameraUniforms()
       this.updateRenderTarget()
 
-      this.updateModelPose(deltaTime)
-
+      // Use single encoder for both compute and render (reduces sync points)
       const encoder = this.device.createCommandEncoder()
+
+      this.updateModelPose(deltaTime, encoder)
+
       const pass = encoder.beginRenderPass(this.renderPassDescriptor)
 
       pass.setVertexBuffer(0, this.vertexBuffer)
@@ -2091,9 +1963,9 @@ export class Engine {
 
       this.drawCallCount = 0
 
-      // PASS 1: Opaque non-eye, non-hair
-      pass.setPipeline(this.pipeline)
-      for (const draw of this.opaqueNonEyeNonHairDraws) {
+      // Pass 1: Opaque
+      pass.setPipeline(this.modelPipeline)
+      for (const draw of this.opaqueDraws) {
         if (draw.count > 0) {
           pass.setBindGroup(0, draw.bindGroup)
           pass.drawIndexed(draw.count, 1, draw.firstIndex, 0, 0)
@@ -2101,9 +1973,9 @@ export class Engine {
         }
       }
 
-      // PASS 2: Eyes (writes stencil = 1)
+      // Pass 2: Eyes (writes stencil value for hair to test against)
       pass.setPipeline(this.eyePipeline)
-      pass.setStencilReference(1) // Set stencil reference value to 1
+      pass.setStencilReference(this.STENCIL_EYE_VALUE)
       for (const draw of this.eyeDraws) {
         if (draw.count > 0) {
           pass.setBindGroup(0, draw.bindGroup)
@@ -2112,10 +1984,10 @@ export class Engine {
         }
       }
 
-      // PASS 3: Hair rendering with depth pre-pass and unified pipeline
+      // Pass 3: Hair rendering (depth pre-pass + shading + outlines)
       this.drawOutlines(pass, false)
 
-      // 3a: Hair depth pre-pass (eliminates overdraw by rejecting fragments early)
+      // 3a: Hair depth pre-pass (reduces overdraw via early depth rejection)
       if (this.hairDrawsOverEyes.length > 0 || this.hairDrawsOverNonEyes.length > 0) {
         pass.setPipeline(this.hairDepthPipeline)
         for (const draw of this.hairDrawsOverEyes) {
@@ -2132,10 +2004,10 @@ export class Engine {
         }
       }
 
-      // 3b: Hair shading pass with unified pipeline and dynamic branching
+      // 3b: Hair shading (split by stencil for transparency over eyes)
       if (this.hairDrawsOverEyes.length > 0) {
-        pass.setPipeline(this.hairUnifiedPipelineOverEyes)
-        pass.setStencilReference(1)
+        pass.setPipeline(this.hairPipelineOverEyes)
+        pass.setStencilReference(this.STENCIL_EYE_VALUE)
         for (const draw of this.hairDrawsOverEyes) {
           if (draw.count > 0) {
             pass.setBindGroup(0, draw.bindGroup)
@@ -2146,8 +2018,8 @@ export class Engine {
       }
 
       if (this.hairDrawsOverNonEyes.length > 0) {
-        pass.setPipeline(this.hairUnifiedPipelineOverNonEyes)
-        pass.setStencilReference(1)
+        pass.setPipeline(this.hairPipelineOverNonEyes)
+        pass.setStencilReference(this.STENCIL_EYE_VALUE)
         for (const draw of this.hairDrawsOverNonEyes) {
           if (draw.count > 0) {
             pass.setBindGroup(0, draw.bindGroup)
@@ -2157,9 +2029,9 @@ export class Engine {
         }
       }
 
-      // 3c: Hair outlines - unified single pass without stencil testing
+      // 3c: Hair outlines
       if (this.hairOutlineDraws.length > 0) {
-        pass.setPipeline(this.hairUnifiedOutlinePipeline)
+        pass.setPipeline(this.hairOutlinePipeline)
         for (const draw of this.hairOutlineDraws) {
           if (draw.count > 0) {
             pass.setBindGroup(0, draw.bindGroup)
@@ -2168,9 +2040,9 @@ export class Engine {
         }
       }
 
-      // PASS 4: Transparent non-eye, non-hair
-      pass.setPipeline(this.pipeline)
-      for (const draw of this.transparentNonEyeNonHairDraws) {
+      // Pass 4: Transparent
+      pass.setPipeline(this.modelPipeline)
+      for (const draw of this.transparentDraws) {
         if (draw.count > 0) {
           pass.setBindGroup(0, draw.bindGroup)
           pass.drawIndexed(draw.count, 1, draw.firstIndex, 0, 0)
@@ -2183,14 +2055,12 @@ export class Engine {
       pass.end()
       this.device.queue.submit([encoder.finish()])
 
-      // Apply bloom post-processing
       this.applyBloom()
 
       this.updateStats(performance.now() - currentTime)
     }
   }
 
-  // Apply bloom post-processing
   private applyBloom() {
     if (!this.sceneRenderTexture || !this.bloomExtractTexture) {
       return
@@ -2206,12 +2076,8 @@ export class Engine {
     this.device.queue.writeBuffer(this.bloomIntensityBuffer, 0, intensityData)
 
     const encoder = this.device.createCommandEncoder()
-    const width = this.canvas.width
-    const height = this.canvas.height
-    const bloomWidth = Math.floor(width / 2)
-    const bloomHeight = Math.floor(height / 2)
 
-    // Pass 1: Extract bright areas (downsample to half resolution)
+    // Extract bright areas
     const extractPass = encoder.beginRenderPass({
       label: "bloom extract",
       colorAttachments: [
@@ -2229,8 +2095,8 @@ export class Engine {
     extractPass.draw(6, 1, 0, 0)
     extractPass.end()
 
-    // Pass 2: Horizontal blur
-    const hBlurData = new Float32Array(4) // vec2f + padding = 4 floats
+    // Horizontal blur
+    const hBlurData = new Float32Array(4)
     hBlurData[0] = 1.0
     hBlurData[1] = 0.0
     this.device.queue.writeBuffer(this.blurDirectionBuffer, 0, hBlurData)
@@ -2251,8 +2117,8 @@ export class Engine {
     blurHPass.draw(6, 1, 0, 0)
     blurHPass.end()
 
-    // Pass 3: Vertical blur
-    const vBlurData = new Float32Array(4) // vec2f + padding = 4 floats
+    // Vertical blur
+    const vBlurData = new Float32Array(4)
     vBlurData[0] = 0.0
     vBlurData[1] = 1.0
     this.device.queue.writeBuffer(this.blurDirectionBuffer, 0, vBlurData)
@@ -2273,7 +2139,7 @@ export class Engine {
     blurVPass.draw(6, 1, 0, 0)
     blurVPass.end()
 
-    // Pass 4: Compose scene + bloom to canvas
+    // Compose to canvas
     const composePass = encoder.beginRenderPass({
       label: "bloom compose",
       colorAttachments: [
@@ -2294,7 +2160,6 @@ export class Engine {
     this.device.queue.submit([encoder.finish()])
   }
 
-  // Update camera uniform buffer each frame
   private updateCameraUniforms() {
     const viewMatrix = this.camera.getViewMatrix()
     const projectionMatrix = this.camera.getProjectionMatrix()
@@ -2307,19 +2172,16 @@ export class Engine {
     this.device.queue.writeBuffer(this.cameraUniformBuffer, 0, this.cameraMatrixData)
   }
 
-  // Update render target texture view
   private updateRenderTarget() {
     const colorAttachment = (this.renderPassDescriptor.colorAttachments as GPURenderPassColorAttachment[])[0]
     if (this.sampleCount > 1) {
-      // Resolve to scene render texture for post-processing
       colorAttachment.resolveTarget = this.sceneRenderTextureView
     } else {
-      // Render directly to scene render texture
       colorAttachment.view = this.sceneRenderTextureView
     }
   }
 
-  private updateModelPose(deltaTime: number) {
+  private updateModelPose(deltaTime: number, encoder: GPUCommandEncoder) {
     this.currentModel!.evaluatePose()
     const worldMats = this.currentModel!.getBoneWorldMatrices()
 
@@ -2334,41 +2196,31 @@ export class Engine {
       worldMats.byteOffset,
       worldMats.byteLength
     )
-    this.computeSkinMatrices()
+    this.computeSkinMatrices(encoder)
   }
 
-  // Compute skin matrices on GPU
-  private computeSkinMatrices() {
+  private computeSkinMatrices(encoder: GPUCommandEncoder) {
     const boneCount = this.currentModel!.getSkeleton().bones.length
-    const workgroupSize = 64
-    // Dispatch exactly enough threads for all bones (no bounds check needed)
-    const workgroupCount = Math.ceil(boneCount / workgroupSize)
+    const workgroupCount = Math.ceil(boneCount / this.COMPUTE_WORKGROUP_SIZE)
 
-    // Bone count is written once in setupModelBuffers() and never changes
-
-    const encoder = this.device.createCommandEncoder()
     const pass = encoder.beginComputePass()
     pass.setPipeline(this.skinMatrixComputePipeline!)
     pass.setBindGroup(0, this.skinMatrixComputeBindGroup!)
     pass.dispatchWorkgroups(workgroupCount)
     pass.end()
-    this.device.queue.submit([encoder.finish()])
   }
 
-  // Draw outlines (opaque or transparent)
   private drawOutlines(pass: GPURenderPassEncoder, transparent: boolean) {
     pass.setPipeline(this.outlinePipeline)
     if (transparent) {
-      // Draw transparent outlines (if any)
-      for (const draw of this.transparentNonEyeNonHairOutlineDraws) {
+      for (const draw of this.transparentOutlineDraws) {
         if (draw.count > 0) {
           pass.setBindGroup(0, draw.bindGroup)
           pass.drawIndexed(draw.count, 1, draw.firstIndex, 0, 0)
         }
       }
     } else {
-      // Draw opaque outlines before main geometry
-      for (const draw of this.opaqueNonEyeNonHairOutlineDraws) {
+      for (const draw of this.opaqueOutlineDraws) {
         if (draw.count > 0) {
           pass.setBindGroup(0, draw.bindGroup)
           pass.drawIndexed(draw.count, 1, draw.firstIndex, 0, 0)
@@ -2398,12 +2250,13 @@ export class Engine {
       this.lastFpsUpdate = now
     }
 
-    // Calculate GPU memory: textures + buffers + render targets
+    this.stats.gpuMemory = this.gpuMemoryMB
+  }
+
+  private calculateGpuMemory(): number {
     let textureMemoryBytes = 0
-    for (const [path, size] of this.textureSizes.entries()) {
-      if (this.textureCache.has(path)) {
-        textureMemoryBytes += size.width * size.height * 4 // RGBA8 = 4 bytes per pixel
-      }
+    for (const texture of this.textureCache.values()) {
+      textureMemoryBytes += texture.width * texture.height * 4
     }
 
     let bufferMemoryBytes = 0
@@ -2435,55 +2288,50 @@ export class Engine {
       const skeleton = this.currentModel?.getSkeleton()
       if (skeleton) bufferMemoryBytes += Math.max(256, skeleton.bones.length * 16 * 4)
     }
-    bufferMemoryBytes += 40 * 4 // cameraUniformBuffer
-    bufferMemoryBytes += 64 * 4 // lightUniformBuffer
-    bufferMemoryBytes += 32 // boneCountBuffer
-    bufferMemoryBytes += 32 // blurDirectionBuffer
-    bufferMemoryBytes += 32 // bloomIntensityBuffer
-    bufferMemoryBytes += 32 // bloomThresholdBuffer
+    bufferMemoryBytes += 40 * 4
+    bufferMemoryBytes += 64 * 4
+    bufferMemoryBytes += 32
+    bufferMemoryBytes += 32
+    bufferMemoryBytes += 32
+    bufferMemoryBytes += 32
     if (this.fullscreenQuadBuffer) {
-      bufferMemoryBytes += 24 * 4 // fullscreenQuadBuffer (6 vertices * 4 floats)
+      bufferMemoryBytes += 24 * 4
     }
-
-    // Material uniform buffers: Float32Array(8) = 32 bytes each
     const totalMaterialDraws =
-      this.opaqueNonEyeNonHairDraws.length +
+      this.opaqueDraws.length +
       this.eyeDraws.length +
       this.hairDrawsOverEyes.length +
       this.hairDrawsOverNonEyes.length +
-      this.transparentNonEyeNonHairDraws.length
-    bufferMemoryBytes += totalMaterialDraws * 32 // Material uniform buffers (8 floats = 32 bytes)
+      this.transparentDraws.length
+    bufferMemoryBytes += totalMaterialDraws * 32
 
-    // Outline material uniform buffers: Float32Array(8) = 32 bytes each
     const totalOutlineDraws =
-      this.opaqueNonEyeNonHairOutlineDraws.length +
+      this.opaqueOutlineDraws.length +
       this.eyeOutlineDraws.length +
       this.hairOutlineDraws.length +
-      this.transparentNonEyeNonHairOutlineDraws.length
-    bufferMemoryBytes += totalOutlineDraws * 32 // Outline material uniform buffers
+      this.transparentOutlineDraws.length
+    bufferMemoryBytes += totalOutlineDraws * 32
 
     let renderTargetMemoryBytes = 0
     if (this.multisampleTexture) {
       const width = this.canvas.width
       const height = this.canvas.height
-      renderTargetMemoryBytes += width * height * 4 * this.sampleCount // multisample color
-      renderTargetMemoryBytes += width * height * 4 // depth (depth24plus-stencil8 = 4 bytes)
+      renderTargetMemoryBytes += width * height * 4 * this.sampleCount
+      renderTargetMemoryBytes += width * height * 4
     }
     if (this.sceneRenderTexture) {
       const width = this.canvas.width
       const height = this.canvas.height
-      renderTargetMemoryBytes += width * height * 4 // sceneRenderTexture (non-multisampled)
+      renderTargetMemoryBytes += width * height * 4
     }
     if (this.bloomExtractTexture) {
-      const width = Math.floor(this.canvas.width / 2)
-      const height = Math.floor(this.canvas.height / 2)
-      renderTargetMemoryBytes += width * height * 4 // bloomExtractTexture
-      renderTargetMemoryBytes += width * height * 4 // bloomBlurTexture1
-      renderTargetMemoryBytes += width * height * 4 // bloomBlurTexture2
+      const width = Math.floor(this.canvas.width / this.BLOOM_DOWNSCALE_FACTOR)
+      const height = Math.floor(this.canvas.height / this.BLOOM_DOWNSCALE_FACTOR)
+      renderTargetMemoryBytes += width * height * 4 * 3
     }
 
     const totalGPUMemoryBytes = textureMemoryBytes + bufferMemoryBytes + renderTargetMemoryBytes
-    this.stats.gpuMemory = Math.round((totalGPUMemoryBytes / 1024 / 1024) * 100) / 100
+    return Math.round((totalGPUMemoryBytes / 1024 / 1024) * 100) / 100
   }
   async exportToBlender(filename: string = "animation_blender.json",
     options: ExportOptions = {}) {
@@ -2547,4 +2395,5 @@ export class Engine {
 
     downloadBlob(blob, filename); // Меняем расширение на .glb
   }
+
 }

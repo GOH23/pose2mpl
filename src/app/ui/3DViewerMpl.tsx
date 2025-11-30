@@ -1,4 +1,5 @@
-import { Engine } from "@/lib/engine"
+import { Engine } from "@/lib/engine/engine"
+import { RZengLoader } from "@/lib/engine/rzeng/rzeng-loader";
 import { WasmMPLCompiler } from "mmd-mpl";
 import { useCallback, useEffect, useRef, useState } from "react"
 
@@ -29,9 +30,15 @@ export function ViewerMpl({ isAnimating = true, mplCompiler, mpl_code }: ViewerM
                     bloomIntensity: 0.06,
                 })
                 engineRef.current = engine
-
+                // const poolPlane = engine.createPoolPlane(30, 30, 100, {
+                //     animationSpeed: 0.5,
+                //     waveHeight: 0.2,
+                //     waveFrequency: 1.5
+                // })
+                // engine.addPoolPlane(poolPlane)
+                //poolPlane.setWaveParameters(0.4, 2.0, 0.8)
                 await engine.init()
-                await engine.loadModel("/models/Kirara/绮良良.pmx")
+                await engine.loadModel("/Kirara.rzeng")
 
                 // Run render loop only if still mounted and animating
                 if (isMountedRef.current && isAnimating) {
@@ -51,7 +58,7 @@ export function ViewerMpl({ isAnimating = true, mplCompiler, mpl_code }: ViewerM
                 isInitializingRef.current = false
             }
         }
-    }, [isAnimating]) // Зависимость от isAnimating
+    }, [isAnimating])
 
     useEffect(() => {
         isMountedRef.current = true
