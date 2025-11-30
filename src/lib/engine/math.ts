@@ -201,7 +201,26 @@ export class Quat {
   static identity(): Quat {
     return new Quat(0, 0, 0, 1);
   }
+  toEulerAngles(): Vec3 {
+    const x = this.x, y = this.y, z = this.z, w = this.w;
+    const sinX = 2 * (y * z - w * x);
+    const clampedSinX = Math.max(-1, Math.min(1, sinX));
+    const rotX = Math.asin(clampedSinX);
 
+    let rotY: number;
+    let rotZ: number;
+    if (Math.abs(clampedSinX) > 0.999) {
+      rotZ = 0;
+      rotY = Math.atan2(2 * (w * z + x * y), 1 - 2 * (x * x + y * y));
+    } else {
+      rotY = Math.atan2(-(2 * x * z + 2 * w * y), 1 - 2 * (x * x + y * y));
+      rotZ = Math.atan2(2 * x * y + 2 * w * z, 1 - 2 * (x * x + z * z));
+    }
+
+    const result = VEC3_POOL.acquire();
+    result.set(rotX, rotY, rotZ);
+    return result;
+  }
   multiply(other: Quat): this {
     const ax = this.x, ay = this.y, az = this.z, aw = this.w;
     const bx = other.x, by = other.y, bz = other.z, bw = other.w;
@@ -409,19 +428,19 @@ export class Mat4 {
   }
   translate(tx: number, ty: number, tz: number): this {
     const v = this.values;
-    
+
     // Умножаем текущую матрицу на матрицу переноса
     // Матрица переноса:
     // [1, 0, 0, 0]
     // [0, 1, 0, 0]
     // [0, 0, 1, 0]
     // [tx, ty, tz, 1]
-    
+
     v[12] = v[0] * tx + v[4] * ty + v[8] * tz + v[12];
     v[13] = v[1] * tx + v[5] * ty + v[9] * tz + v[13];
     v[14] = v[2] * tx + v[6] * ty + v[10] * tz + v[14];
     v[15] = v[3] * tx + v[7] * ty + v[11] * tz + v[15];
-    
+
     return this;
   }
   // Версия с дополнительным масштабированием (если понадобится)
