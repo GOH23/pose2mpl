@@ -39,7 +39,7 @@ export function ViewPage() {
                 engineRef.current = engine
                 await engine.init()
 
-                await engine.loadModel("/Kirara.rzeng")
+                await engine.loadModel("models/Kirara.rzeng")
                 //await engine.loadModel("/塞尔凯特/塞尔凯特.pmx")
                 // Run render loop only if still mounted and animating
                 if (isMountedRef.current) {
@@ -82,7 +82,7 @@ export function ViewPage() {
     // Обработчики действий
     const handlePlayAnimation = async () => {
         if (engineRef.current) {
-            await engineRef.current.loadAnimation("/Stand.vmd")
+            await engineRef.current.loadAnimation("/Way Back Home Motion.vmd")
             engineRef.current.playAnimation()
             setAnimationPlaying(true)
         }
