@@ -386,7 +386,7 @@ export class Model {
             TEMP_QUAT2.set(ax, ay, az, aw)
             
             const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, absRatio)
-            rotateM.set(Mat4.fromQuat(result.x, result.y, result.z, result.w).multiply(rotateM))
+            rotateM.set(Mat4.fromQuat(result.x, result.y, result.z, result.w).multiply(rotateM).values)
           }
 
           if (b.appendMove) {
