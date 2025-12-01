@@ -1,6 +1,6 @@
 "use client"
 
-import { Engine } from "@/lib/engine/engine-optimized"
+import { Engine } from "@/lib/engine/engine"
 import { useRef, useState, useCallback, useEffect } from "react"
 import { ModelConverter } from "../ui/conv"
 
