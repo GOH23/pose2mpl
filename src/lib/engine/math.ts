@@ -317,7 +317,128 @@ export class Quat {
       s0 * a.w + s1 * bw
     );
   }
+  static FromUnitVectorsToRef(
+    vecFrom: Vec3,
+    vecTo: Vec3,
+    result: Quat,
+    epsilon: number = 1e-6
+  ): Quat {
+    // Используем локальные переменные для оптимизации
+    const fromX = vecFrom.x, fromY = vecFrom.y, fromZ = vecFrom.z;
+    const toX = vecTo.x, toY = vecTo.y, toZ = vecTo.z;
 
+    const dot = fromX * toX + fromY * toY + fromZ * toZ;
+
+    // Проверяем, почти ли векторы идентичны
+    if (dot > 1.0 - epsilon) {
+      result.x = 0;
+      result.y = 0;
+      result.z = 0;
+      result.w = 1;
+      return result;
+    }
+
+    // Проверяем, почти ли векторы противоположны
+    if (dot < -1.0 + epsilon) {
+      // Находим перпендикулярную ось
+      let axisX = fromY;
+      let axisY = -fromX;
+      let axisZ = 0;
+
+      // Проверяем, не слишком ли маленькая ось
+      const lenSq = axisX * axisX + axisY * axisY;
+      if (lenSq < epsilon) {
+        axisX = 0;
+        axisY = fromZ;
+        axisZ = -fromY;
+      }
+
+      // Нормализуем ось
+      const len = Math.sqrt(axisX * axisX + axisY * axisY + axisZ * axisZ);
+      if (len > epsilon) {
+        const invLen = 1 / len;
+        result.x = axisX * invLen;
+        result.y = axisY * invLen;
+        result.z = axisZ * invLen;
+        result.w = 0;
+      } else {
+        // Резервный вариант
+        result.x = 1;
+        result.y = 0;
+        result.z = 0;
+        result.w = 0;
+      }
+      return result;
+    }
+
+    // Общий случай
+    const crossX = fromY * toZ - fromZ * toY;
+    const crossY = fromZ * toX - fromX * toZ;
+    const crossZ = fromX * toY - fromY * toX;
+
+    const w = Math.sqrt((1 + dot) * 2);
+    const invW = 1 / w;
+
+    result.x = crossX * invW;
+    result.y = crossY * invW;
+    result.z = crossZ * invW;
+    result.w = w * 0.5;
+
+    // Нормализуем результат
+    const x = result.x, y = result.y, z = result.z, w_val = result.w;
+    const len = Math.sqrt(x * x + y * y + z * z + w_val * w_val);
+    if (len > epsilon) {
+      const invLen = 1 / len;
+      result.x = x * invLen;
+      result.y = y * invLen;
+      result.z = z * invLen;
+      result.w = w_val * invLen;
+    } else {
+      result.x = 0;
+      result.y = 0;
+      result.z = 0;
+      result.w = 1;
+    }
+
+    return result;
+  }
+  static RotationYawPitchRoll(yaw: number, pitch: number, roll: number): Quat {
+    var result = new Quat()
+    // Предварительно вычисляем синусы и косинусы половинных углов
+    const halfYaw = yaw * 0.5;
+    const halfPitch = pitch * 0.5;
+    const halfRoll = roll * 0.5;
+
+    const cy = Math.cos(halfYaw), sy = Math.sin(halfYaw);
+    const cp = Math.cos(halfPitch), sp = Math.sin(halfPitch);
+    const cr = Math.cos(halfRoll), sr = Math.sin(halfRoll);
+
+    // Порядок вращений: Yaw (Y) -> Pitch (X) -> Roll (Z)
+    // Это соответствует порядку YXZ
+
+    // Вычисляем компоненты кватерниона
+    result.x = sp * cy * cr - cp * sy * sr;
+    result.y = cp * sy * cr + sp * cy * sr;
+    result.z = cp * cy * sr - sp * sy * cr;
+    result.w = cp * cy * cr + sp * sy * sr;
+
+    // Нормализуем результат
+    const x = result.x, y = result.y, z = result.z, w = result.w;
+    const len = Math.sqrt(x * x + y * y + z * z + w * w);
+    if (len > 1e-8) {
+      const invLen = 1 / len;
+      result.x = x * invLen;
+      result.y = y * invLen;
+      result.z = z * invLen;
+      result.w = w * invLen;
+    } else {
+      result.x = 0;
+      result.y = 0;
+      result.z = 0;
+      result.w = 1;
+    }
+    return result
+  }
   // Оптимизированное создание из углов Эйлера
   static fromEuler(rotX: number, rotY: number, rotZ: number): Quat {
     const halfX = rotX * 0.5;
@@ -375,6 +496,85 @@ export class Mat4 {
         0, 0, 0, 1
       ]);
     }
+  }
+  static FromQuaternionToRef(quat: Quat, result: Mat4): void {
+    const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
+    const x2 = x + x, y2 = y + y, z2 = z + z;
+    const xx = x * x2, xy = x * y2, xz = x * z2;
+    const yy = y * y2, yz = y * z2, zz = z * z2;
+    const wx = w * x2, wy = w * y2, wz = w * z2;
+
+    const values = result.values;
+    values[0] = 1 - (yy + zz);
+    values[1] = xy + wz;
+    values[2] = xz - wy;
+    values[3] = 0;
+
+    values[4] = xy - wz;
+    values[5] = 1 - (xx + zz);
+    values[6] = yz + wx;
+    values[7] = 0;
+
+    values[8] = xz + wy;
+    values[9] = yz - wx;
+    values[10] = 1 - (xx + yy);
+    values[11] = 0;
+
+    values[12] = 0;
+    values[13] = 0;
+    values[14] = 0;
+    values[15] = 1;
+  }
+
+  invert(): this {
+    const m = this.values;
+    const out = this.values; // In-place operation
+
+    const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+    const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+    const a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+
+    const b00 = a00 * a11 - a01 * a10;
+    const b01 = a00 * a12 - a02 * a10;
+    const b02 = a00 * a13 - a03 * a10;
+    const b03 = a01 * a12 - a02 * a11;
+    const b04 = a01 * a13 - a03 * a11;
+    const b05 = a02 * a13 - a03 * a12;
+    const b06 = a20 * a31 - a21 * a30;
+    const b07 = a20 * a32 - a22 * a30;
+    const b08 = a20 * a33 - a23 * a30;
+    const b09 = a21 * a32 - a22 * a31;
+    const b10 = a21 * a33 - a23 * a31;
+    const b11 = a22 * a33 - a23 * a32;
+
+    let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+
+    if (Math.abs(det) < 1e-10) {
+      console.warn("Matrix is not invertible (determinant near zero)");
+      return this.setIdentity();
+    }
+
+    const invDet = 1.0 / det;
+
+    out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * invDet;
+    out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * invDet;
+    out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * invDet;
+    out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * invDet;
+    out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * invDet;
+    out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * invDet;
+    out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * invDet;
+    out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * invDet;
+    out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * invDet;
+    out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * invDet;
+    out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * invDet;
+    out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * invDet;
+    out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * invDet;
+    out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * invDet;
+    out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * invDet;
+    out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
+
+    return this;
   }
   static fromPositionRotation(position: Vec3, rotation: Quat): Mat4 {
     const x = rotation.x, y = rotation.y, z = rotation.z, w = rotation.w;
