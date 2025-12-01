@@ -1024,7 +1024,17 @@ export class Mat4 {
     this.values[14] += tz;
     return this;
   }
+  static FromValues(values: Float32Array | number[]): Mat4 {
+    if (values.length !== 16) {
+      throw new Error('Mat4.FromValues requires exactly 16 values');
+    }
 
+    const array = values instanceof Float32Array
+      ? new Float32Array(values)
+      : new Float32Array(values.map(v => Number(v)));
+
+    return new Mat4(array);
+  }
   // Метод для переиспользования объекта из пула
   free(): void {
     MAT4_POOL.release(this);
