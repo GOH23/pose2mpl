@@ -311,7 +311,25 @@ export class PmxLoader {
         mat.isFace = materialName.includes("face") || materialName.includes("脸")
 
         // Classify hair materials
-        mat.isHair = materialName.includes("hair_f")
+        mat.isHair = materialName.includes("hair_f") ||
+          materialName.includes("hair") ||
+          materialName.includes("髮") ||  // Японский символ для волос
+          materialName.includes("发") ||  // Китайский символ для волос
+          materialName.includes("hair_f") ||
+          materialName.includes("hair_") ||
+          materialName.includes("髮+") ||
+          materialName.includes("髮辫") ||
+          materialName.includes("髮") ||
+          materialName.includes("hair") ||
+          materialName.includes("Hair") ||
+          materialName.includes("HAIR") ||
+          materialName.includes("hair.") ||
+          materialName.includes("hair.bmp") || // Прямое имя файла
+          materialName.includes("_hair") ||
+          materialName.includes("hair_") ||
+          // Также проверяем текстуру волос в именах файлов
+          (textureIndex >= 0 && textureIndex < this.textures.length &&
+            this.textures[textureIndex].path.toLowerCase().includes("hair"))
 
         this.materials.push(mat)
       }

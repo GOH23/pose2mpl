@@ -49,6 +49,7 @@ type BoneKeyFrame = {
     boneName: string
     time: number
     rotation: Quat
+    position: Vec3
 }
 
 export class Engine {
@@ -372,6 +373,7 @@ export class Engine {
             },
             multisample: { count: this.sampleCount },
         })
+
 
         // Hair outline pipeline
         this.hairOutlinePipeline = this.device.createRenderPipeline({
@@ -1179,7 +1181,6 @@ export class Engine {
         this.stats.drawCalls = this.drawCallCount
     }
 
-    // OPTIMIZED MATERIAL SETUP
     private async setupMaterials(model: Model) {
         const materials = model.getMaterials();
         if (materials.length === 0) {
@@ -1191,13 +1192,15 @@ export class Engine {
         // Clear previous batches
         this.clearBatches();
 
-        // Pre-load all textures in parallel with better error handling
+        // Pre-load all textures in parallel
         const [loadedTextures, loadedToonTextures] = await Promise.all([
             this.loadTexturesBatch(textures),
             this.loadToonTexturesBatch(materials)
         ]);
 
-        console.log(`Loaded ${loadedTextures.size} diffuse textures, ${loadedToonTextures.size} toon textures`);
+        materials.forEach(mat => {
+            console.log(`  ${mat.name}: isEye=${mat.isEye}, isFace=${mat.isFace}, isHair=${mat.isHair}`);
+        });
 
         let currentIndexOffset = 0;
 
@@ -1205,23 +1208,61 @@ export class Engine {
         for (const mat of materials) {
             const indexCount = mat.vertexCount;
             if (indexCount === 0) continue;
-
-            // DEBUG: Log eye materials
-            if (mat.isEye) {
-                console.log(`Processing eye material: ${mat.name}, diffuseIndex: ${mat.diffuseTextureIndex}, toonIndex: ${mat.toonTextureIndex}`);
-            }
-
             const diffuseTexture = loadedTextures.get(mat.diffuseTextureIndex);
             const toonTexture = loadedToonTextures.get(mat.toonTextureIndex);
 
-            // IMPROVED: Create fallback textures for missing ones
+            // Create fallback textures for missing ones
             const finalDiffuseTexture = await this.ensureTexture(diffuseTexture!, mat.diffuseTextureIndex, textures, "diffuse");
             const finalToonTexture = await this.ensureToonTexture(toonTexture!, mat.toonTextureIndex);
 
-            if (!finalDiffuseTexture || !finalToonTexture) {
-                console.warn(`Material "${mat.name}" missing textures (diffuse: ${!!finalDiffuseTexture}, toon: ${!!finalToonTexture}), but creating with fallbacks`);
 
-                // Create with fallback textures anyway
+            // Теперь обрабатываем материалы волос отдельно
+            if (mat.isHair) {
+
+
+                // Для волос создаем две группы: для рендеринга над глазами и над не-глазами
+                const hairOverEyesGroup = await this.createHairMaterialBindGroup(
+                    mat,
+                    finalDiffuseTexture || await this.createFallbackTexture(),
+                    finalToonTexture || await this.loadToonTexture(-1),
+                    true
+                );
+
+                const hairOverNonEyesGroup = await this.createHairMaterialBindGroup(
+                    mat,
+                    finalDiffuseTexture || await this.createFallbackTexture(),
+                    finalToonTexture || await this.loadToonTexture(-1),
+                    false
+                );
+
+                // Добавляем в соответствующие батчи
+                this.hairBatchesOverEyes.push({
+                    bindGroup: hairOverEyesGroup,
+                    startIndex: currentIndexOffset,
+                    count: indexCount,
+                    pipeline: this.hairPipelineOverEyes
+                });
+
+                this.hairBatchesOverNonEyes.push({
+                    bindGroup: hairOverNonEyesGroup,
+                    startIndex: currentIndexOffset,
+                    count: indexCount,
+                    pipeline: this.hairPipelineOverNonEyes
+                });
+
+                // Также создаем outline для волос, если нужно
+                if ((mat.edgeFlag & 0x10) !== 0 && mat.edgeSize > 0) {
+                    const outlineBindGroup = this.createOutlineBindGroup(mat);
+                    const outlineBatch: Batch = {
+                        bindGroup: outlineBindGroup,
+                        startIndex: currentIndexOffset,
+                        count: indexCount,
+                        pipeline: this.hairOutlinePipeline
+                    }
+                    this.outlineBatches.push(outlineBatch);
+                }
+            } else {
+                // Обработка остальных материалов (как было раньше)
                 await this.createOptimizedMaterial(
                     mat,
                     finalDiffuseTexture || await this.createFallbackTexture(),
@@ -1229,22 +1270,10 @@ export class Engine {
                     currentIndexOffset,
                     indexCount
                 );
-            } else {
-                await this.createOptimizedMaterial(
-                    mat,
-                    finalDiffuseTexture,
-                    finalToonTexture,
-                    currentIndexOffset,
-                    indexCount
-                );
             }
 
             currentIndexOffset += indexCount;
         }
-
-        // DEBUG: Log batch counts
-        console.log(`Batch counts - Opaque: ${this.opaqueBatches.length}, Eyes: ${this.eyeBatches.length}, Hair: ${this.hairBatchesOverEyes.length + this.hairBatchesOverNonEyes.length}, Transparent: ${this.transparentDraws.length}`);
-
         this.gpuMemoryMB = this.calculateGpuMemory();
     }
 
@@ -1255,9 +1284,6 @@ export class Engine {
         type: string
     ): Promise<GPUTexture | null> {
         if (texture) return texture;
-
-        console.log(`Creating fallback ${type} texture for index ${textureIndex}`);
-
         // Try to load again with more aggressive path resolution
         if (textureIndex >= 0 && textureIndex < textures.length) {
             const textureInfo = textures[textureIndex];
@@ -1273,8 +1299,6 @@ export class Engine {
         toonIndex: number
     ): Promise<GPUTexture> {
         if (toonTexture) return toonTexture;
-
-        console.log(`Creating fallback toon texture for index ${toonIndex}`);
         return this.loadToonTexture(toonIndex);
     }
 
@@ -1503,6 +1527,11 @@ export class Engine {
             this.eyeBatches.push(mainBatch);
             console.log(`Added eye material to batches: ${mat.name}`);
         } else if (mat.isHair) {
+            console.log(`Creating HAIR material: ${mat.name}, 
+                 diffuseTexture: ${mat.diffuseTextureIndex}, 
+                 alpha: ${mat.diffuse[3]},
+                 edgeFlag: ${mat.edgeFlag},
+                 edgeSize: ${mat.edgeSize}`);
             // Create separate batches for hair over eyes and non-eyes
             const hairOverEyesGroup = await this.createHairMaterialBindGroup(mat, diffuseTexture, toonTexture, true);
             const hairOverNonEyesGroup = await this.createHairMaterialBindGroup(mat, diffuseTexture, toonTexture, false);
@@ -1632,7 +1661,77 @@ export class Engine {
             ],
         })
     }
+    public getCamera(): Camera {
+        return this.camera;
+    }
 
+    public setCameraPosition(target: Vec3, radius?: number): void {
+        this.camera.target = target;
+        if (radius !== undefined) {
+            this.camera.radius = Math.max(0.1, radius);
+        }
+        this.camera.markDirty();
+    }
+
+    public toggleWireframe(enabled: boolean): void {
+        // Реализация wireframe режима
+        console.log(`Wireframe: ${enabled}`);
+        // В реальности здесь нужно переключать pipeline
+    }
+
+    public toggleBloom(enabled: boolean): void {
+        this.bloomIntensity = enabled ? 0.12 : 0;
+        const intensityData = new Float32Array(8);
+        intensityData[0] = this.bloomIntensity;
+        this.device.queue.writeBuffer(this.bloomIntensityBuffer, 0, intensityData);
+    }
+
+    public setModelVisibility(visible: boolean): void {
+        // Можно управлять рендерингом модели
+        // Пока просто логируем
+        console.log(`Model visibility: ${visible}`);
+    }
+
+    public takeScreenshot(filename: string = "screenshot.png"): void {
+        const canvas = document.createElement('canvas');
+        canvas.width = this.canvas.width;
+        canvas.height = this.canvas.height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Копируем изображение с основного canvas
+        ctx.drawImage(this.canvas, 0, 0);
+
+        // Создаем ссылку для скачивания
+        const link = document.createElement('a');
+        link.download = filename;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    }
+
+    public resetCamera(): void {
+        this.camera.alpha = Math.PI;
+        this.camera.beta = Math.PI / 2.5;
+        this.camera.radius = this.cameraDistance;
+        this.camera.target = this.cameraTarget;
+        this.camera.markDirty();
+    }
+
+    public getModelInfo(): {
+        boneCount: number;
+        materialCount: number;
+        vertexCount: number;
+        textureCount: number;
+    } | null {
+        if (!this.currentModel) return null;
+
+        return {
+            boneCount: this.currentModel.getSkeleton().bones.length,
+            materialCount: this.currentModel.getMaterials().length,
+            vertexCount: this.currentModel.getVertexCount(),
+            textureCount: this.currentModel.getTextures().length
+        };
+    }
     private async createHairMaterialBindGroup(
         mat: Material,
         diffuseTexture: GPUTexture,
@@ -1668,10 +1767,10 @@ export class Engine {
         uniformData[5] = 1.0 // rimColor.g
         uniformData[6] = 1.0 // rimColor.b
         uniformData[7] = isOverEyes ? 1.0 : 0.0 // isOverEyes
-        uniformData[8] = mat.diffuse[0] // diffuse.r
-        uniformData[9] = mat.diffuse[1] // diffuse.g
-        uniformData[10] = mat.diffuse[2] // diffuse.b
-        uniformData[11] = mat.diffuse[3] // diffuse.a
+        uniformData[8] = mat.diffuse[0]  // diffuse.r
+        uniformData[9] = mat.diffuse[1]  // diffuse.g
+        uniformData[10] = mat.diffuse[2]  // diffuse.b
+        uniformData[11] = mat.diffuse[3] // diffuse.aF
 
         const uniformBuffer = this.device.createBuffer({
             label: `hair material uniform (${isOverEyes ? "over eyes" : "over non-eyes"}): ${mat.name}`,
@@ -2187,24 +2286,26 @@ export class Engine {
         const frames = await VMDLoader.load(url)
         this.animationFrames = frames
     }
+    // В классе Engine, замените метод playAnimation() на эту версию:
 
     public playAnimation() {
-        if (this.animationFrames.length === 0) return
+        if (this.animationFrames.length === 0) return;
 
-        this.stopAnimation()
+        this.stopAnimation();
 
-        const allBoneKeyFrames: BoneKeyFrame[] = []
+        const allBoneKeyFrames: BoneKeyFrame[] = [];
         for (const keyFrame of this.animationFrames) {
             for (const boneFrame of keyFrame.boneFrames) {
                 allBoneKeyFrames.push({
                     boneName: boneFrame.boneName,
                     time: keyFrame.time,
+                    position: boneFrame.position,
                     rotation: boneFrame.rotation,
                 })
             }
         }
 
-        const boneKeyFramesByBone = new Map<string, BoneKeyFrame[]>()
+        const boneKeyFramesByBone = new Map<string, BoneKeyFrame[]>();
         for (const boneKeyFrame of allBoneKeyFrames) {
             if (!boneKeyFramesByBone.has(boneKeyFrame.boneName)) {
                 boneKeyFramesByBone.set(boneKeyFrame.boneName, [])
@@ -2216,89 +2317,65 @@ export class Engine {
             keyFrames.sort((a, b) => a.time - b.time)
         }
 
-        const time0Rotations: Array<{ boneName: string; rotation: Quat }> = []
-        const bonesWithTime0 = new Set<string>()
-        for (const [boneName, keyFrames] of boneKeyFramesByBone.entries()) {
-            if (keyFrames.length > 0 && keyFrames[0].time === 0) {
-                time0Rotations.push({
-                    boneName: boneName,
-                    rotation: keyFrames[0].rotation,
-                })
-                bonesWithTime0.add(boneName)
-            }
-        }
-
         if (this.currentModel) {
-            if (time0Rotations.length > 0) {
-                const boneNames = time0Rotations.map((r) => r.boneName)
-                const rotations = time0Rotations.map((r) => r.rotation)
-                this.rotateBones(boneNames, rotations, 0)
-            }
+            // Для каждой кости из анимации
+            for (const [boneName, keyFrames] of boneKeyFramesByBone.entries()) {
+                const isCenterBone = this.isCenterBone(boneName);
+                const parentBoneName = this.currentModel.findParentBone();
 
-            const skeleton = this.currentModel.getSkeleton()
-            const bonesToReset: string[] = []
-            for (const bone of skeleton.bones) {
-                if (!bonesWithTime0.has(bone.name)) {
-                    bonesToReset.push(bone.name)
-                }
-            }
+                for (let i = 0; i < keyFrames.length; i++) {
+                    const boneKeyFrame = keyFrames[i];
+                    const previousBoneKeyFrame = i > 0 ? keyFrames[i - 1] : null;
 
-            if (bonesToReset.length > 0) {
-                const identityQuat = new Quat(0, 0, 0, 1)
-                const identityQuats = new Array(bonesToReset.length).fill(identityQuat)
-                this.rotateBones(bonesToReset, identityQuats, 0)
-            }
+                    if (boneKeyFrame.time === 0) continue;
 
-            this.currentModel.evaluatePose()
+                    let durationMs = 0;
+                    if (i === 0) {
+                        durationMs = boneKeyFrame.time * 1000;
+                    } else if (previousBoneKeyFrame) {
+                        durationMs = (boneKeyFrame.time - previousBoneKeyFrame.time) * 1000;
+                    }
 
-            // Reset physics immediately and upload matrices to prevent A-pose flash
-            if (this.physics) {
-                const worldMats = this.currentModel.getBoneWorldMatrices()
-                this.physics.reset(worldMats, this.currentModel.getBoneInverseBindMatrices())
+                    const scheduleTime = i > 0 && previousBoneKeyFrame ? previousBoneKeyFrame.time : 0;
+                    const delayMs = scheduleTime * 1000;
 
-                // Upload matrices immediately so next frame shows correct pose
-                this.device.queue.writeBuffer(
-                    this.worldMatrixBuffer!,
-                    0,
-                    worldMats.buffer,
-                    worldMats.byteOffset,
-                    worldMats.byteLength
-                )
-                const encoder = this.device.createCommandEncoder()
-                this.computeSkinMatrices(encoder)
-                this.device.queue.submit([encoder.finish()])
-            }
-        }
-        for (const [_, keyFrames] of boneKeyFramesByBone.entries()) {
-            for (let i = 0; i < keyFrames.length; i++) {
-                const boneKeyFrame = keyFrames[i]
-                const previousBoneKeyFrame = i > 0 ? keyFrames[i - 1] : null
-
-                if (boneKeyFrame.time === 0) continue
-
-                let durationMs = 0
-                if (i === 0) {
-                    durationMs = boneKeyFrame.time * 1000
-                } else if (previousBoneKeyFrame) {
-                    durationMs = (boneKeyFrame.time - previousBoneKeyFrame.time) * 1000
-                }
-
-                const scheduleTime = i > 0 && previousBoneKeyFrame ? previousBoneKeyFrame.time : 0
-                const delayMs = scheduleTime * 1000
-
-                if (delayMs <= 0) {
-                    this.rotateBones([boneKeyFrame.boneName], [boneKeyFrame.rotation], durationMs)
-                } else {
-                    const timeoutId = window.setTimeout(() => {
-                        this.rotateBones([boneKeyFrame.boneName], [boneKeyFrame.rotation], durationMs)
-                    }, delayMs)
-                    this.animationTimeouts.push(timeoutId)
+                    if (delayMs <= 0) {
+                        // Если это центровая кость, используем специальную логику
+                        if (isCenterBone && parentBoneName) {
+                            this.currentModel.animateCenterWithHierarchy(
+                                boneKeyFrame.position,
+                                boneKeyFrame.rotation,
+                                durationMs
+                            );
+                        } else {
+                            this.currentModel!.transformBones([boneKeyFrame.boneName], [boneKeyFrame.position], [boneKeyFrame.rotation], durationMs);
+                        }
+                    } else {
+                        const timeoutId = window.setTimeout(() => {
+                            if (isCenterBone && parentBoneName) {
+                                this.currentModel!.animateCenterWithHierarchy(
+                                    boneKeyFrame.position,
+                                    boneKeyFrame.rotation,
+                                    durationMs
+                                );
+                            } else {
+                                this.currentModel!.transformBones([boneKeyFrame.boneName], [boneKeyFrame.position], [boneKeyFrame.rotation], durationMs);
+                            }
+                        }, delayMs);
+                        this.animationTimeouts.push(timeoutId);
+                    }
                 }
             }
         }
-
     }
 
+    // Добавьте вспомогательный метод в Engine
+    private isCenterBone(boneName: string): boolean {
+        const centerPatterns = ["センター", "Center", "center", "センター", "センター"];
+        return centerPatterns.some(pattern =>
+            boneName.includes(pattern) || boneName === pattern
+        );
+    }
     public stopAnimation() {
         for (const timeoutId of this.animationTimeouts) {
             clearTimeout(timeoutId)

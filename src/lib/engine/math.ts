@@ -69,7 +69,7 @@ export class Vec3 {
   z: number;
 
   constructor(x?: number, y?: number, z?: number) {
-    this.x = x || 0;
+    this.x = x || 0;                
     this.y = y || 0;
     this.z = z || 0;
   }
@@ -83,12 +83,10 @@ export class Vec3 {
   static TransformCoordinates(vector: Vec3, transformation: Mat4): Vec3 {
     const x = vector.x, y = vector.y, z = vector.z;
     const m = transformation.values;
-
     const rx = x * m[0] + y * m[4] + z * m[8] + m[12];
     const ry = x * m[1] + y * m[5] + z * m[9] + m[13];
     const rz = x * m[2] + y * m[6] + z * m[10] + m[14];
     const rw = x * m[3] + y * m[7] + z * m[11] + m[15] || 1.0;
-
     if (Math.abs(rw) > EPSILON) {
       const invW = 1.0 / rw;
       return new Vec3(rx * invW, ry * invW, rz * invW);

@@ -1,4 +1,4 @@
-import { Mat4, Quat, easeInOut } from "./math"
+import { Mat4, Quat, Vec3, easeInOut } from "./math"
 import { Rigidbody, Joint } from "./physics"
 
 const VERTEX_STRIDE = 8
@@ -7,6 +7,12 @@ export interface Texture {
   path: string
   name: string
 }
+// Добавьте в начало файла (после других интерфейсов)
+export interface BoneTransform {
+  position: Vec3;
+  rotation: Quat;
+}
+
 
 export interface Material {
   name: string
@@ -105,7 +111,7 @@ export class Model {
     materials: Material[],
     skeleton: Skeleton,
     skinning: Skinning,
-    rigidbodies: Rigidbody[] = [],
+    rigidbodies: Rigidbody[] = [],                  
     joints: Joint[] = [],
     textureData?: Map<string, ArrayBuffer> // Новый параметр
   ) {
@@ -122,13 +128,397 @@ export class Model {
     if (this.skeleton.bones.length == 0) {
       throw new Error("Model has no bones")
     }
-    if (textureData) {
+    if (textureData) {   
       this.textureData = textureData
     }
     this.initializeRuntimeSkeleton()
     this.initializeRotTweenBuffers()
   }
+  private isIKBone(boneName: string): boolean {
+    // Точные японские названия IK костей
+    const jpIKBones = [
+      "左足ＩＫ",     // leg IK L
+      "左つま先ＩＫ",  // toe IK L
+      "右足ＩＫ",     // leg IK R
+      "右つま先ＩＫ",  // toe IK R
+      "左足IK",       // альтернативное написание
+      "右足IK",       // альтернативное написание
+      "左足",         // левая нога
+      "右足",         // правая нога
+      "足IK",         // IK ноги
+      "つま先IK"      // IK пальцев ног
+    ];
 
+    // Английские названия
+    const enIKBones = [
+      "leg IK L", "leg IK R",
+      "toe IK L", "toe IK R",
+      "leg ik l", "leg ik r",
+      "toe ik l", "toe ik r",
+      "Leg IK", "Toe IK",
+      "Leg_Ik", "Toe_Ik"
+    ];
+
+    // Объединяем все паттерны
+    const allPatterns = [...jpIKBones, ...enIKBones];
+
+    // Проверяем точное совпадение или вхождение подстроки
+    return allPatterns.some(pattern =>
+      boneName === pattern ||
+      boneName.includes(pattern) ||
+      // Также проверяем без учета регистра для английских
+      boneName.toLowerCase().includes(pattern.toLowerCase())
+    );
+  }
+
+  // Добавьте метод для точной идентификации конкретных IK костей
+  private getIKBoneType(boneName: string): string | null {
+    const ikTypes = {
+      "左足ＩＫ": "left_leg_ik",
+      "左足IK": "left_leg_ik",
+      "leg IK L": "left_leg_ik",
+      "左足": "left_leg",
+
+      "右足ＩＫ": "right_leg_ik",
+      "右足IK": "right_leg_ik",
+      "leg IK R": "right_leg_ik",
+      "右足": "right_leg",
+
+      "左つま先ＩＫ": "left_toe_ik",
+      "左つま先IK": "left_toe_ik",
+      "toe IK L": "left_toe_ik",
+      "左つま先": "left_toe",
+
+      "右つま先ＩＫ": "right_toe_ik",
+      "右つま先IK": "right_toe_ik",
+      "toe IK R": "right_toe_ik",
+      "右つま先": "right_toe"
+    };
+
+    // Проверяем точные совпадения
+    for (const [pattern, type] of Object.entries(ikTypes)) {
+      if (boneName === pattern || boneName.includes(pattern)) {
+        return type;
+      }
+    }
+
+    return null;
+  }
+
+  // Метод для обработки IK костей с учетом их типа
+  private processIKBone(boneName: string, position: Vec3, rotation: Quat): void {
+    const ikType = this.getIKBoneType(boneName);
+    if (!ikType) return;
+
+    const idx = this.runtimeSkeleton.nameIndex[boneName];
+    if (idx < 0) return;
+
+    const ti = idx * 3;
+    const qi = idx * 4;
+
+    // Для IK костей применяем более точные трансформации
+    const runtime = this.runtimeSkeleton;
+
+    // Применяем позицию
+    runtime.localTranslations[ti] = position.x;
+    runtime.localTranslations[ti + 1] = position.y;
+    runtime.localTranslations[ti + 2] = position.z;
+
+    // Для IK костей ног вращение может быть критично
+    // Нормализуем кватернион для точности
+    const normalizedRot = rotation.normalize();
+    runtime.localRotations[qi] = normalizedRot.x;
+    runtime.localRotations[qi + 1] = normalizedRot.y;
+    runtime.localRotations[qi + 2] = normalizedRot.z;
+    runtime.localRotations[qi + 3] = normalizedRot.w;
+
+    // Сбрасываем состояние твина для IK костей (они не интерполируются)
+    this.rotTweenState.active[idx] = 0;
+  }
+
+  // Обновите метод transformBones для лучшей обработки IK:
+
+  transformBones(boneNames: string[], positions: Vec3[], rots: Quat[], durationMs?: number): void {
+    const state = this.rotTweenState;
+    const now = performance.now();
+    const dur = durationMs && durationMs > 0 ? durationMs : 0;
+    const runtime = this.runtimeSkeleton;
+
+    // Разделяем кости на категории
+    const centerBones: Array<{ name: string, idx: number, pos: Vec3, rot: Quat }> = [];
+    const ikBones: Array<{ name: string, idx: number, pos: Vec3, rot: Quat }> = [];
+    const regularBones: Array<{ name: string, idx: number, pos: Vec3, rot: Quat }> = [];
+
+    // Сначала классифицируем все кости
+    for (let i = 0; i < boneNames.length; i++) {
+      const name = boneNames[i];
+      const idx = runtime.nameIndex[name] ?? -1;
+      if (idx < 0 || idx >= this.skeleton.bones.length) continue;
+
+      const targetPos = positions[i];
+      const targetQuat = rots[i].normalize();
+
+      const boneData = { name, idx, pos: targetPos, rot: targetQuat };
+
+      if (this.isCenterBone(name)) {
+        centerBones.push(boneData);
+      } else if (this.isIKBone(name)) {
+        ikBones.push(boneData);
+      } else {
+        regularBones.push(boneData);
+      }
+    }
+
+    // 1. Сначала обрабатываем центровые кости
+    for (const { name, idx, pos, rot } of centerBones) {
+      const ti = idx * 3;
+      const qi = idx * 4;
+
+      // Находим родительскую кость "全ての親"
+      const bone = this.skeleton.bones[idx];
+      if (bone.parentIndex >= 0) {
+        const parentBone = this.skeleton.bones[bone.parentIndex];
+
+        // Если родитель - "全ての親", применяем трансформацию к нему
+        if (parentBone.name.includes("全ての親")) {
+          const parentIdx = bone.parentIndex;
+          const parentTi = parentIdx * 3;
+          const parentQi = parentIdx * 4;
+
+          // Применяем позицию к родителю
+          runtime.localTranslations[parentTi] = pos.x;
+          runtime.localTranslations[parentTi + 1] = pos.y;
+          runtime.localTranslations[parentTi + 2] = pos.z;
+
+          // Вращение тоже к родителю
+          runtime.localRotations[parentQi] = rot.x;
+          runtime.localRotations[parentQi + 1] = rot.y;
+          runtime.localRotations[parentQi + 2] = rot.z;
+          runtime.localRotations[parentQi + 3] = rot.w;
+
+          // Сбрасываем центровую кость
+          runtime.localTranslations[ti] = 0;
+          runtime.localTranslations[ti + 1] = 0;
+          runtime.localTranslations[ti + 2] = 0;
+          runtime.localRotations[qi] = 0;
+          runtime.localRotations[qi + 1] = 0;
+          runtime.localRotations[qi + 2] = 0;
+          runtime.localRotations[qi + 3] = 1;
+
+          state.active[idx] = 0;
+          state.active[parentIdx] = 0;
+          continue;
+        }
+      }
+
+      // Если родитель не "全ての親", обрабатываем как обычную кость
+      regularBones.push({ name, idx, pos, rot });
+    }
+
+    // 2. Обрабатываем обычные кости (с интерполяцией если нужно)
+    for (const { name, idx, pos, rot } of regularBones) {
+      const ti = idx * 3;
+      const qi = idx * 4;
+
+      if (dur === 0) {
+        // Применяем без интерполяции
+        runtime.localTranslations[ti] = pos.x;
+        runtime.localTranslations[ti + 1] = pos.y;
+        runtime.localTranslations[ti + 2] = pos.z;
+
+        runtime.localRotations[qi] = rot.x;
+        runtime.localRotations[qi + 1] = rot.y;
+        runtime.localRotations[qi + 2] = rot.z;
+        runtime.localRotations[qi + 3] = rot.w;
+
+        state.active[idx] = 0;
+      } else {
+        // С интерполяцией
+        const rotations = runtime.localRotations;
+        const tx = rot.x;
+        const ty = rot.y;
+        const tz = rot.z;
+        const tw = rot.w;
+
+        let sx = rotations[qi];
+        let sy = rotations[qi + 1];
+        let sz = rotations[qi + 2];
+        let sw = rotations[qi + 3];
+
+        if (state.active[idx] === 1) {
+          const startMs = state.startTimeMs[idx];
+          const prevDur = state.durationMs[idx] || 1;
+          const t = Math.max(0, Math.min(1, (now - startMs) / prevDur));
+          if (t < 1) {
+            const e = easeInOut(t);
+
+            TEMP_QUAT1.set(
+              state.startQuat[qi],
+              state.startQuat[qi + 1],
+              state.startQuat[qi + 2],
+              state.startQuat[qi + 3]
+            );
+            TEMP_QUAT2.set(
+              state.targetQuat[qi],
+              state.targetQuat[qi + 1],
+              state.targetQuat[qi + 2],
+              state.targetQuat[qi + 3]
+            );
+
+            const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, e);
+            sx = result.x;
+            sy = result.y;
+            sz = result.z;
+            sw = result.w;
+          }
+        }
+
+        state.startQuat[qi] = sx;
+        state.startQuat[qi + 1] = sy;
+        state.startQuat[qi + 2] = sz;
+        state.startQuat[qi + 3] = sw;
+        state.targetQuat[qi] = tx;
+        state.targetQuat[qi + 1] = ty;
+        state.targetQuat[qi + 2] = tz;
+        state.targetQuat[qi + 3] = tw;
+        state.startTimeMs[idx] = now;
+        state.durationMs[idx] = dur;
+        state.active[idx] = 1;
+
+        runtime.localTranslations[ti] = pos.x;
+        runtime.localTranslations[ti + 1] = pos.y;
+        runtime.localTranslations[ti + 2] = pos.z;
+      }
+    }
+
+    // 3. В конце обрабатываем IK кости (без интерполяции для точности)
+    for (const { name, idx, pos, rot } of ikBones) {
+      this.processIKBone(name, pos, rot);
+    }
+
+    // 4. После применения всех трансформаций, пересчитываем мировые матрицы
+    //    Особенно важно для IK, которые зависят от родителей
+    this.evaluatePose();
+  }
+  // Метод для проверки, является ли кость центровой
+  private isCenterBone(boneName: string): boolean {
+    const centerPatterns = [
+      "センター",
+      "Center",
+      "center",
+      "センター",
+      "センター",
+      "センター"
+    ];
+
+    return centerPatterns.some(pattern =>
+      boneName.includes(pattern) || boneName === pattern
+    );
+  }
+
+  // Метод для поиска центровой кости
+  findCenterBone(): string | null {
+    const centerPatterns = [
+      "センター",
+      "Center",
+      "center",
+      "センター",
+      "センター"
+    ];
+
+    for (const pattern of centerPatterns) {
+      for (const bone of this.skeleton.bones) {
+        if (bone.name.includes(pattern) || bone.name === pattern) {
+          return bone.name;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // Метод для поиска материнской кости "全ての親"
+  findParentBone(): string | null {
+    const parentPatterns = [
+      "全ての親",
+      "全ての親",
+      "全ての親",
+      "Root",
+      "root",
+      "RootNode",
+      "root_node"
+    ];
+
+    for (const pattern of parentPatterns) {
+      for (const bone of this.skeleton.bones) {
+        if (bone.name.includes(pattern) || bone.name === pattern) {
+          return bone.name;
+        }
+      }
+    }
+
+    // Если не нашли по паттерну, ищем корневую кость
+    const rootBones = this.skeleton.bones.filter(b => b.parentIndex === -1);
+    return rootBones.length > 0 ? rootBones[0].name : null;
+  }
+
+  // Метод для анимации центровой кости с учетом иерархии
+  animateCenterWithHierarchy(position: Vec3, rotation: Quat, durationMs?: number): boolean {
+    const centerBoneName = this.findCenterBone();
+    const parentBoneName = this.findParentBone();
+
+    if (!centerBoneName && !parentBoneName) {
+      return false;
+    }
+
+    // Если есть центровая кость и ее родитель - "全ての親"
+    if (centerBoneName && parentBoneName) {
+      const centerIdx = this.runtimeSkeleton.nameIndex[centerBoneName];
+      if (centerIdx >= 0) {
+        const centerBone = this.skeleton.bones[centerIdx];
+
+        // Проверяем, является ли родитель центровой кости материнской костью
+        if (centerBone.parentIndex >= 0) {
+          const parentBone = this.skeleton.bones[centerBone.parentIndex];
+          const isParentOfCenter = parentBone.name === parentBoneName;
+
+          if (isParentOfCenter) {
+            // Анимируем материнскую кость
+            this.transformBones([parentBoneName], [position], [rotation], durationMs);
+
+            // Сбрасываем центровую кость в начальное положение
+            const zeroPos = new Vec3(0, 0, 0);
+            const identityRot = new Quat(0, 0, 0, 1);
+            this.transformBones([centerBoneName], [zeroPos], [identityRot], durationMs);
+
+            return true;
+          }
+        }
+      }
+    }
+
+    // Если нет иерархии или центровая кость не найдена,
+    // просто анимируем найденную кость (материнскую или центровую)
+    const boneToAnimate = centerBoneName || parentBoneName;
+    if (boneToAnimate) {
+      this.transformBones([boneToAnimate], [position], [rotation], durationMs);
+      return true;
+    }
+
+    return false;
+  }
+  animateBone(boneName: string, position: Vec3, rotation: Quat, durationMs?: number): void {
+    this.transformBones([boneName], [position], [rotation], durationMs);
+  }
+
+  // Метод для получения кости по имени
+  getBoneByName(boneName: string): Bone | null {
+    const idx = this.runtimeSkeleton.nameIndex[boneName];
+    if (idx !== undefined && idx >= 0 && idx < this.skeleton.bones.length) {
+      return this.skeleton.bones[idx];
+    }
+    return null;
+  }
   getTextureData(): Map<string, ArrayBuffer> {
     return this.textureData
   }
@@ -136,7 +526,7 @@ export class Model {
   getTextureDataByPath(path: string): ArrayBuffer | undefined {
     return this.textureData.get(path)
   }
-  
+
   private initializeRuntimeSkeleton(): void {
     const boneCount = this.skeleton.bones.length
 
@@ -187,11 +577,11 @@ export class Model {
       const e = easeInOut(t)
 
       const qi = i * 4
-      
+
       // Используем кэшированные кватернионы вместо создания новых
       TEMP_QUAT1.set(state.startQuat[qi], state.startQuat[qi + 1], state.startQuat[qi + 2], state.startQuat[qi + 3])
       TEMP_QUAT2.set(state.targetQuat[qi], state.targetQuat[qi + 1], state.targetQuat[qi + 2], state.targetQuat[qi + 3])
-      
+
       const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, e)
 
       rotations[qi] = result.x
@@ -293,7 +683,7 @@ export class Model {
         const t = Math.max(0, Math.min(1, (now - startMs) / prevDur))
         if (t < 1) {
           const e = easeInOut(t)
-          
+
           TEMP_QUAT1.set(
             state.startQuat[qi],
             state.startQuat[qi + 1],
@@ -306,7 +696,7 @@ export class Model {
             state.targetQuat[qi + 2],
             state.targetQuat[qi + 3]
           )
-          
+
           const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, e)
           sx = result.x
           sy = result.y
@@ -381,10 +771,10 @@ export class Model {
             const az = localRot[apQi + 2] * (ratio < 0 ? -1 : 1)
             const aw = localRot[apQi + 3]
             const absRatio = Math.abs(ratio)
-            
+
             TEMP_QUAT1.set(0, 0, 0, 1) // identity
             TEMP_QUAT2.set(ax, ay, az, aw)
-            
+
             const result = Quat.slerp(TEMP_QUAT1, TEMP_QUAT2, absRatio)
             rotateM.set(Mat4.fromQuat(result.x, result.y, result.z, result.w).multiply(rotateM).values)
           }
@@ -408,7 +798,7 @@ export class Model {
         const p = b.parentIndex
         if (!computed[p]) computeWorld(p)
         const parentOffset = p * 16
-        
+
         // Используем кэшированную матрицу для умножения
         Mat4.multiplyArrays(worldBuf, parentOffset, localM.values, 0, TEMP_MAT2.values, 0)
         worldBuf.set(TEMP_MAT2.values, worldOffset)

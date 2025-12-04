@@ -142,7 +142,7 @@ export class Camera {
     return this._projectionMatrix
   }
 
-  private markDirty() {
+  public markDirty() {
     this._dirty.position = true
     this._dirty.viewMatrix = true
     this._dirty.cameraVectors = true
