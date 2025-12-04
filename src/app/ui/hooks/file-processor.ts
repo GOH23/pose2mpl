@@ -65,7 +65,7 @@ export async function createRZengFromFiles(modelData: ModelFiles): Promise<Array
 
   try {
     // Используем существующий конвертер с модификациями для работы с файлами
-    const bundleBuffer = await RZengConverter.createBundleFromFiles(
+    const bundleBuffer = await RZengConverter.createBundleFromFolder(
       pmxUrl,
       vmdUrls.map(v => v.url),
       textureMap,
